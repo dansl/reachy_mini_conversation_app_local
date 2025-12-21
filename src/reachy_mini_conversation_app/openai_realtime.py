@@ -73,24 +73,26 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._shutdown_requested: bool = False
         self._connected_event: asyncio.Event = asyncio.Event()
 
-        # Chatterbox TTS endpoint (if configured) - uses OpenAI-compatible speech API
-        self._chatterbox_endpoint: str | None = None
+        # Chatterbox TTS (Gradio endpoint)
+        self._chatterbox_client: GradioClient | None = None
         self._chatterbox_ref_audio: str | None = None
         if config.CHATTERBOX_ENDPOINT:
-            self._chatterbox_endpoint = config.CHATTERBOX_ENDPOINT.rstrip("/")
             # Reference audio for voice cloning
             if config.CHATTERBOX_REF_AUDIO:
                 self._chatterbox_ref_audio = config.CHATTERBOX_REF_AUDIO
             else:
                 # Use alfred voice file from project root
-                # __file__ is .../src/reachy_mini_conversation_app/openai_realtime.py
-                # project root is .../reachy_mini_conversation_app/
                 project_dir = Path(__file__).parent.parent.parent
                 alfred_path = project_dir / "alfred_1_isolated.wav"
                 if alfred_path.exists():
                     self._chatterbox_ref_audio = str(alfred_path)
                     logger.info("Using alfred voice for TTS: %s", self._chatterbox_ref_audio)
-            logger.info("Chatterbox TTS endpoint configured at %s", self._chatterbox_endpoint)
+            try:
+                self._chatterbox_client = GradioClient(config.CHATTERBOX_ENDPOINT)
+                logger.info("Chatterbox TTS client initialized at %s", config.CHATTERBOX_ENDPOINT)
+            except Exception as e:
+                logger.error("Failed to initialize Chatterbox TTS client: %s", e)
+                self._chatterbox_client = None
 
         # Local LLM client (if configured) - uses OpenAI-compatible API (vLLM)
         self._local_llm_client: AsyncOpenAI | None = None
@@ -144,7 +146,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             self._local_vad_endpoint
             and self._local_asr_client
             and self._local_llm_client
-            and self._chatterbox_endpoint
+            and self._chatterbox_client
         )
 
     def copy(self) -> "OpenaiRealtimeHandler":
@@ -190,7 +192,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             text: The text to synthesize.
 
         """
-        if not self._chatterbox_endpoint:
+        if not self._chatterbox_client:
             logger.warning("Chatterbox endpoint not configured, skipping TTS")
             return
 
@@ -202,106 +204,77 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             await self._synthesize_sentence(sentence)
 
     async def _synthesize_sentence(self, text: str) -> None:
-        """Synthesize a single sentence and stream audio immediately.
+        """Synthesize a single sentence using Chatterbox Gradio endpoint.
 
         Args:
             text: The sentence to synthesize.
         """
+        if not self._chatterbox_client:
+            return
+
         try:
-            import struct
+            logger.debug("TTS for sentence: %s", text[:50])
 
-            url = f"{self._chatterbox_endpoint}/v1/audio/speech"
-            payload: dict[str, Any] = {
-                "model": "mlx-community/chatterbox-turbo-8bit",
-                "input": text,
-                "voice": "default",
-                "speed": 1.0,
-            }
+            # Run the blocking Gradio client call in a thread pool
+            from gradio_client import handle_file
 
-            # Add reference audio for voice cloning if available
-            if self._chatterbox_ref_audio:
-                payload["ref_audio"] = self._chatterbox_ref_audio
+            # Wrap the reference audio file for Gradio
+            ref_audio = handle_file(self._chatterbox_ref_audio) if self._chatterbox_ref_audio else None
 
-            logger.debug("Streaming TTS for: %s", text[:50])
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: self._chatterbox_client.predict(
+                    text,                    # text
+                    ref_audio,               # audio_prompt_path (wrapped)
+                    0.8,                     # temperature
+                    0,                       # seed_num
+                    0.0,                     # min_p
+                    0.95,                    # top_p
+                    1000,                    # top_k
+                    1.2,                     # repetition_penalty
+                    True,                    # norm_loudness
+                    fn_index=9,
+                ),
+            )
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        logger.error("Chatterbox TTS failed: %s - %s", response.status, error_text)
-                        return
+            # Handle different Gradio return formats
+            if isinstance(result, str):
+                # It's a file path - read the audio file
+                import scipy.io.wavfile as wavfile
+                sample_rate, audio_data = wavfile.read(result)
+            elif isinstance(result, tuple) and len(result) >= 2:
+                sample_rate, audio_data = result[0], result[1]
+            elif isinstance(result, np.ndarray):
+                sample_rate = 24000
+                audio_data = result
+            else:
+                logger.error("Unexpected Chatterbox result format: %s", type(result))
+                return
 
-                    # WAV header is 44 bytes - parse it first to get sample rate
-                    header = await response.content.read(44)
-                    if len(header) < 44:
-                        logger.error("Incomplete WAV header received")
-                        return
+            # Convert to numpy array if needed
+            if not isinstance(audio_data, np.ndarray):
+                audio_data = np.array(audio_data)
 
-                    # Parse WAV header to get sample rate (bytes 24-27, little-endian)
-                    sample_rate = struct.unpack("<I", header[24:28])[0]
-                    bits_per_sample = struct.unpack("<H", header[34:36])[0]
-                    logger.debug("WAV stream: %d Hz, %d-bit", sample_rate, bits_per_sample)
+            # Resample to output sample rate if different
+            if sample_rate != self.output_sample_rate:
+                num_samples = int(len(audio_data) * self.output_sample_rate / sample_rate)
+                audio_data = resample(audio_data, num_samples)
 
-                    # Calculate chunk size for ~100ms of audio at source sample rate
-                    bytes_per_sample = bits_per_sample // 8
-                    samples_per_chunk = sample_rate // 10  # 100ms
-                    chunk_bytes = samples_per_chunk * bytes_per_sample
+            # Convert to int16
+            audio_data = audio_to_int16(audio_data)
 
-                    # Stream audio data
-                    buffer = b""
-                    async for data in response.content.iter_any():
-                        buffer += data
+            # Feed to head wobbler if available
+            if self.deps.head_wobbler is not None:
+                self.deps.head_wobbler.feed(base64.b64encode(audio_data.tobytes()).decode("utf-8"))
 
-                        # Process complete chunks
-                        while len(buffer) >= chunk_bytes:
-                            chunk_data = buffer[:chunk_bytes]
-                            buffer = buffer[chunk_bytes:]
-
-                            # Convert to numpy array
-                            if bits_per_sample == 16:
-                                audio_chunk = np.frombuffer(chunk_data, dtype=np.int16)
-                            elif bits_per_sample == 32:
-                                audio_chunk = np.frombuffer(chunk_data, dtype=np.float32)
-                                audio_chunk = (audio_chunk * 32767).astype(np.int16)
-                            else:
-                                logger.warning("Unsupported bit depth: %d", bits_per_sample)
-                                continue
-
-                            # Resample if needed
-                            if sample_rate != self.output_sample_rate:
-                                num_samples = int(len(audio_chunk) * self.output_sample_rate / sample_rate)
-                                audio_chunk = resample(audio_chunk, num_samples).astype(np.int16)
-
-                            # Feed to head wobbler if available
-                            if self.deps.head_wobbler is not None:
-                                self.deps.head_wobbler.feed(base64.b64encode(audio_chunk.tobytes()).decode("utf-8"))
-
-                            # Queue for immediate playback
-                            await self.output_queue.put(
-                                (self.output_sample_rate, audio_chunk.reshape(1, -1)),
-                            )
-
-                    # Process any remaining data in buffer
-                    if buffer:
-                        if bits_per_sample == 16:
-                            audio_chunk = np.frombuffer(buffer, dtype=np.int16)
-                        elif bits_per_sample == 32:
-                            audio_chunk = np.frombuffer(buffer, dtype=np.float32)
-                            audio_chunk = (audio_chunk * 32767).astype(np.int16)
-                        else:
-                            audio_chunk = None
-
-                        if audio_chunk is not None and len(audio_chunk) > 0:
-                            if sample_rate != self.output_sample_rate:
-                                num_samples = int(len(audio_chunk) * self.output_sample_rate / sample_rate)
-                                audio_chunk = resample(audio_chunk, num_samples).astype(np.int16)
-
-                            if self.deps.head_wobbler is not None:
-                                self.deps.head_wobbler.feed(base64.b64encode(audio_chunk.tobytes()).decode("utf-8"))
-
-                            await self.output_queue.put(
-                                (self.output_sample_rate, audio_chunk.reshape(1, -1)),
-                            )
+            # Queue audio in chunks for smoother playback
+            chunk_size = 4800  # 200ms at 24kHz
+            for i in range(0, len(audio_data), chunk_size):
+                chunk = audio_data[i : i + chunk_size]
+                await self.output_queue.put(
+                    (self.output_sample_rate, chunk.reshape(1, -1)),
+                )
 
             logger.debug("TTS sentence complete: %s", text[:30])
 
@@ -519,7 +492,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 )
 
                 # Synthesize with Chatterbox
-                if self._chatterbox_endpoint:
+                if self._chatterbox_client:
                     await self._synthesize_with_chatterbox(text_response)
 
         except Exception as e:
@@ -728,7 +701,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 }
 
                 # Only include audio output if NOT using Chatterbox TTS
-                if not self._chatterbox_endpoint:
+                if not self._chatterbox_client:
                     audio_config["output"] = {
                         "format": {
                             "type": "audio/pcm",
@@ -757,7 +730,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         del session_config["audio"]["output"]
                     logger.info("Local LLM enabled - OpenAI transcription-only mode, local LLM will generate responses")
                 # When using Chatterbox only (no local LLM), keep OpenAI for LLM but use Chatterbox for TTS
-                elif self._chatterbox_endpoint:
+                elif self._chatterbox_client:
                     # Remove audio output - Chatterbox will handle TTS
                     if "output" in session_config.get("audio", {}):
                         del session_config["audio"]["output"]
@@ -898,7 +871,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     await self.output_queue.put(AdditionalOutputs({"role": "assistant", "content": event.transcript}))
 
                     # If using Chatterbox TTS, synthesize the transcript
-                    if self._chatterbox_endpoint and event.transcript:
+                    if self._chatterbox_client and event.transcript:
                         asyncio.create_task(self._synthesize_with_chatterbox(event.transcript))
 
                 # Handle text-only responses (skip if using local LLM)
@@ -911,7 +884,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         logger.debug("Skipping OpenAI text response (using local LLM)")
                         continue
                     # Only process if using Chatterbox without local LLM
-                    if self._chatterbox_endpoint:
+                    if self._chatterbox_client:
                         # Extract text from various event formats
                         text = getattr(event, "text", None) or getattr(event, "content", None)
                         if isinstance(text, dict):
@@ -923,7 +896,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                 # Handle audio delta (skip if using Chatterbox TTS)
                 if event.type in ("response.audio.delta", "response.output_audio.delta"):
-                    if self._chatterbox_endpoint:
+                    if self._chatterbox_client:
                         # Skip OpenAI audio when using Chatterbox TTS
                         continue
 
