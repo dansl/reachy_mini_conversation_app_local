@@ -8,6 +8,7 @@ from pathlib import Path
 from datetime import datetime
 
 import cv2
+import aiohttp
 import numpy as np
 import gradio as gr
 from openai import AsyncOpenAI
@@ -15,6 +16,7 @@ from fastrtc import AdditionalOutputs, AsyncStreamHandler, wait_for_item, audio_
 from numpy.typing import NDArray
 from scipy.signal import resample
 from websockets.exceptions import ConnectionClosedError
+from gradio_client import Client as GradioClient
 
 from reachy_mini_conversation_app.config import config
 from reachy_mini_conversation_app.prompts import get_session_voice, get_session_instructions
@@ -55,9 +57,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self.connection: Any = None
         self.output_queue: "asyncio.Queue[Tuple[int, NDArray[np.int16]] | AdditionalOutputs]" = asyncio.Queue()
 
-        self.last_activity_time = asyncio.get_event_loop().time()
         self.start_time = asyncio.get_event_loop().time()
-        self.is_idle_tool_call = False
         self.gradio_mode = gradio_mode
         self.instance_path = instance_path
         # Track how the API key was provided (env vs textbox) and its value
@@ -73,9 +73,460 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._shutdown_requested: bool = False
         self._connected_event: asyncio.Event = asyncio.Event()
 
+        # Chatterbox TTS endpoint (if configured) - uses OpenAI-compatible speech API
+        self._chatterbox_endpoint: str | None = None
+        self._chatterbox_ref_audio: str | None = None
+        if config.CHATTERBOX_ENDPOINT:
+            self._chatterbox_endpoint = config.CHATTERBOX_ENDPOINT.rstrip("/")
+            # Reference audio for voice cloning
+            if config.CHATTERBOX_REF_AUDIO:
+                self._chatterbox_ref_audio = config.CHATTERBOX_REF_AUDIO
+            else:
+                # Use alfred voice file from project root
+                # __file__ is .../src/reachy_mini_conversation_app/openai_realtime.py
+                # project root is .../reachy_mini_conversation_app/
+                project_dir = Path(__file__).parent.parent.parent
+                alfred_path = project_dir / "alfred_1_isolated.wav"
+                if alfred_path.exists():
+                    self._chatterbox_ref_audio = str(alfred_path)
+                    logger.info("Using alfred voice for TTS: %s", self._chatterbox_ref_audio)
+            logger.info("Chatterbox TTS endpoint configured at %s", self._chatterbox_endpoint)
+
+        # Local LLM client (if configured) - uses OpenAI-compatible API (vLLM)
+        self._local_llm_client: AsyncOpenAI | None = None
+        self._local_llm_model: str = config.LOCAL_LLM_MODEL or "Qwen3-30B"
+        self._conversation_history: list[dict[str, Any]] = []
+        self._pending_response_id: str | None = None  # Track OpenAI response to cancel
+        if config.LOCAL_LLM_ENDPOINT:
+            try:
+                self._local_llm_client = AsyncOpenAI(
+                    base_url=config.LOCAL_LLM_ENDPOINT,
+                    api_key="not-needed",  # vLLM doesn't require API key
+                )
+                logger.info("Local LLM client initialized at %s with model %s",
+                           config.LOCAL_LLM_ENDPOINT, self._local_llm_model)
+            except Exception as e:
+                logger.error("Failed to initialize local LLM client: %s", e)
+                self._local_llm_client = None
+
+        # Local ASR client (if configured) - uses Gradio API (GLM-ASR-Nano)
+        self._local_asr_client: GradioClient | None = None
+        self._audio_buffer: list[bytes] = []  # Buffer for audio during speech
+        self._is_speech_active: bool = False
+        if config.LOCAL_ASR_ENDPOINT:
+            try:
+                self._local_asr_client = GradioClient(config.LOCAL_ASR_ENDPOINT)
+                logger.info("Local ASR client initialized at %s", config.LOCAL_ASR_ENDPOINT)
+            except Exception as e:
+                logger.error("Failed to initialize local ASR client: %s", e)
+                self._local_asr_client = None
+
+        # Local VAD endpoint (if configured) - Flask API for smart turn detection
+        self._local_vad_endpoint: str | None = config.LOCAL_VAD_ENDPOINT
+        # Local VAD state for energy-based speech detection
+        self._vad_energy_threshold: float = 0.01  # RMS threshold for speech detection
+        self._vad_silence_frames: int = 0  # Count of consecutive silent frames
+        self._vad_silence_threshold: int = 15  # Frames of silence before checking turn completion (~0.5s at 30fps)
+        self._vad_min_speech_frames: int = 5  # Minimum frames of speech before considering it valid
+        self._vad_speech_frames: int = 0  # Count of speech frames
+        self._vad_processing: bool = False  # Prevent concurrent processing
+        if self._local_vad_endpoint:
+            logger.info("Local VAD enabled at %s (with energy-based speech detection)", self._local_vad_endpoint)
+
+        # Log if full local mode is enabled
+        if self._is_full_local_mode:
+            logger.info("FULL LOCAL MODE: Audio will NOT be sent to OpenAI")
+
+    @property
+    def _is_full_local_mode(self) -> bool:
+        """Check if we're in full local mode (no data sent to OpenAI)."""
+        return bool(
+            self._local_vad_endpoint
+            and self._local_asr_client
+            and self._local_llm_client
+            and self._chatterbox_endpoint
+        )
+
     def copy(self) -> "OpenaiRealtimeHandler":
         """Create a copy of the handler."""
         return OpenaiRealtimeHandler(self.deps, self.gradio_mode, self.instance_path)
+
+    def _split_into_sentences(self, text: str) -> list[str]:
+        """Split text into sentences for faster TTS streaming.
+
+        Args:
+            text: The text to split.
+
+        Returns:
+            List of sentences/chunks to synthesize separately.
+        """
+        import re
+
+        # Split on sentence boundaries (., !, ?) followed by space or end
+        # Keep the punctuation with the sentence
+        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+
+        # Filter out empty strings and merge very short sentences
+        result = []
+        for s in sentences:
+            s = s.strip()
+            if not s:
+                continue
+            # If sentence is very short, merge with previous
+            if result and len(s) < 20 and not s[-1] in '.!?':
+                result[-1] = result[-1] + ' ' + s
+            else:
+                result.append(s)
+
+        return result if result else [text]
+
+    async def _synthesize_with_chatterbox(self, text: str) -> None:
+        """Synthesize text using Chatterbox TTS and stream audio for immediate playback.
+
+        Splits text into sentences and synthesizes each one separately for faster
+        time-to-first-audio. Uses the OpenAI-compatible speech API endpoint.
+
+        Args:
+            text: The text to synthesize.
+
+        """
+        if not self._chatterbox_endpoint:
+            logger.warning("Chatterbox endpoint not configured, skipping TTS")
+            return
+
+        # Split into sentences for faster response
+        sentences = self._split_into_sentences(text)
+        logger.debug("TTS: splitting into %d chunks for faster streaming", len(sentences))
+
+        for sentence in sentences:
+            await self._synthesize_sentence(sentence)
+
+    async def _synthesize_sentence(self, text: str) -> None:
+        """Synthesize a single sentence and stream audio immediately.
+
+        Args:
+            text: The sentence to synthesize.
+        """
+        try:
+            import struct
+
+            url = f"{self._chatterbox_endpoint}/v1/audio/speech"
+            payload: dict[str, Any] = {
+                "model": "mlx-community/chatterbox-turbo-8bit",
+                "input": text,
+                "voice": "default",
+                "speed": 1.0,
+            }
+
+            # Add reference audio for voice cloning if available
+            if self._chatterbox_ref_audio:
+                payload["ref_audio"] = self._chatterbox_ref_audio
+
+            logger.debug("Streaming TTS for: %s", text[:50])
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error("Chatterbox TTS failed: %s - %s", response.status, error_text)
+                        return
+
+                    # WAV header is 44 bytes - parse it first to get sample rate
+                    header = await response.content.read(44)
+                    if len(header) < 44:
+                        logger.error("Incomplete WAV header received")
+                        return
+
+                    # Parse WAV header to get sample rate (bytes 24-27, little-endian)
+                    sample_rate = struct.unpack("<I", header[24:28])[0]
+                    bits_per_sample = struct.unpack("<H", header[34:36])[0]
+                    logger.debug("WAV stream: %d Hz, %d-bit", sample_rate, bits_per_sample)
+
+                    # Calculate chunk size for ~100ms of audio at source sample rate
+                    bytes_per_sample = bits_per_sample // 8
+                    samples_per_chunk = sample_rate // 10  # 100ms
+                    chunk_bytes = samples_per_chunk * bytes_per_sample
+
+                    # Stream audio data
+                    buffer = b""
+                    async for data in response.content.iter_any():
+                        buffer += data
+
+                        # Process complete chunks
+                        while len(buffer) >= chunk_bytes:
+                            chunk_data = buffer[:chunk_bytes]
+                            buffer = buffer[chunk_bytes:]
+
+                            # Convert to numpy array
+                            if bits_per_sample == 16:
+                                audio_chunk = np.frombuffer(chunk_data, dtype=np.int16)
+                            elif bits_per_sample == 32:
+                                audio_chunk = np.frombuffer(chunk_data, dtype=np.float32)
+                                audio_chunk = (audio_chunk * 32767).astype(np.int16)
+                            else:
+                                logger.warning("Unsupported bit depth: %d", bits_per_sample)
+                                continue
+
+                            # Resample if needed
+                            if sample_rate != self.output_sample_rate:
+                                num_samples = int(len(audio_chunk) * self.output_sample_rate / sample_rate)
+                                audio_chunk = resample(audio_chunk, num_samples).astype(np.int16)
+
+                            # Feed to head wobbler if available
+                            if self.deps.head_wobbler is not None:
+                                self.deps.head_wobbler.feed(base64.b64encode(audio_chunk.tobytes()).decode("utf-8"))
+
+                            # Queue for immediate playback
+                            await self.output_queue.put(
+                                (self.output_sample_rate, audio_chunk.reshape(1, -1)),
+                            )
+
+                    # Process any remaining data in buffer
+                    if buffer:
+                        if bits_per_sample == 16:
+                            audio_chunk = np.frombuffer(buffer, dtype=np.int16)
+                        elif bits_per_sample == 32:
+                            audio_chunk = np.frombuffer(buffer, dtype=np.float32)
+                            audio_chunk = (audio_chunk * 32767).astype(np.int16)
+                        else:
+                            audio_chunk = None
+
+                        if audio_chunk is not None and len(audio_chunk) > 0:
+                            if sample_rate != self.output_sample_rate:
+                                num_samples = int(len(audio_chunk) * self.output_sample_rate / sample_rate)
+                                audio_chunk = resample(audio_chunk, num_samples).astype(np.int16)
+
+                            if self.deps.head_wobbler is not None:
+                                self.deps.head_wobbler.feed(base64.b64encode(audio_chunk.tobytes()).decode("utf-8"))
+
+                            await self.output_queue.put(
+                                (self.output_sample_rate, audio_chunk.reshape(1, -1)),
+                            )
+
+            logger.debug("TTS sentence complete: %s", text[:30])
+
+        except Exception as e:
+            logger.error("Chatterbox TTS synthesis failed: %s", e)
+
+    async def _check_turn_complete(self, audio_data: bytes) -> bool:
+        """Check if the user's turn is complete using local VAD.
+
+        Args:
+            audio_data: Raw PCM audio bytes (16-bit, 24kHz, mono)
+
+        Returns:
+            True if turn is complete, False if user might still be speaking
+        """
+        if not self._local_vad_endpoint:
+            return True  # No VAD configured, assume complete
+
+        try:
+            import aiohttp
+            import tempfile
+            import wave
+
+            # Save audio to temp WAV file for the VAD server
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                temp_path = f.name
+                with wave.open(f, 'wb') as wav:
+                    wav.setnchannels(1)  # mono
+                    wav.setsampwidth(2)  # 16-bit
+                    wav.setframerate(self.input_sample_rate)  # 24kHz
+                    wav.writeframes(audio_data)
+
+            # Read the WAV file and encode as base64
+            with open(temp_path, 'rb') as f:
+                audio_bytes = f.read()
+
+            import base64
+            audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+
+            # Clean up temp file
+            try:
+                import os
+                os.unlink(temp_path)
+            except Exception:
+                pass
+
+            # Call VAD endpoint
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self._local_vad_endpoint}/predict",
+                    json={"audio_base64": audio_b64},
+                    timeout=aiohttp.ClientTimeout(total=5.0)
+                ) as resp:
+                    if resp.status == 200:
+                        result = await resp.json()
+                        prediction = result.get("prediction", 1)
+                        probability = result.get("probability", 1.0)
+                        status = result.get("status", "complete")
+                        logger.info("VAD result: %s (probability=%.2f)", status, probability)
+                        return prediction == 1  # 1 = complete, 0 = incomplete
+                    else:
+                        logger.warning("VAD request failed with status %d", resp.status)
+                        return True  # Assume complete on error
+
+        except Exception as e:
+            logger.error("VAD check failed: %s", e)
+            return True  # Assume complete on error
+
+    async def _transcribe_with_local_asr(self, audio_data: bytes) -> str | None:
+        """Transcribe audio using local ASR (GLM-ASR-Nano).
+
+        Args:
+            audio_data: Raw PCM audio bytes (16-bit, 24kHz, mono)
+
+        Returns:
+            Transcribed text or None if failed
+        """
+        if not self._local_asr_client:
+            logger.warning("Local ASR client not available")
+            return None
+
+        try:
+            import tempfile
+            import wave
+
+            # Save audio buffer to temp WAV file
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                temp_path = f.name
+                with wave.open(f, 'wb') as wav:
+                    wav.setnchannels(1)  # mono
+                    wav.setsampwidth(2)  # 16-bit
+                    wav.setframerate(self.input_sample_rate)  # 24kHz
+                    wav.writeframes(audio_data)
+
+            logger.debug("Saved audio buffer to %s (%d bytes)", temp_path, len(audio_data))
+
+            # Call local ASR via Gradio
+            from gradio_client import handle_file
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: self._local_asr_client.predict(
+                    handle_file(temp_path),  # Wrap file path for Gradio
+                    fn_index=0,  # First (and only) function in the Interface
+                )
+            )
+
+            # Clean up temp file
+            try:
+                import os
+                os.unlink(temp_path)
+            except Exception:
+                pass
+
+            if isinstance(result, str) and result.strip():
+                transcript = result.strip()
+                # Filter out error messages
+                if transcript.startswith("[") and transcript.endswith("]"):
+                    logger.warning("ASR returned placeholder: %s", transcript)
+                    return None
+                logger.info("Local ASR transcription: %s", transcript)
+                return transcript
+
+            logger.warning("Local ASR returned empty result")
+            return None
+
+        except Exception as e:
+            logger.error("Local ASR transcription failed: %s", e)
+            return None
+
+    async def _process_local_asr(self, audio_data: bytes, check_vad: bool = True) -> None:
+        """Process audio with local ASR and generate response with local LLM.
+
+        Args:
+            audio_data: Raw PCM audio bytes from the speech buffer.
+            check_vad: Whether to check VAD first (default True).
+        """
+        # Check if turn is complete using local VAD
+        if check_vad and self._local_vad_endpoint:
+            is_complete = await self._check_turn_complete(audio_data)
+            if not is_complete:
+                logger.info("VAD says turn incomplete - waiting for more speech")
+                # Re-enable speech buffering to capture more audio
+                self._is_speech_active = True
+                # Put the audio back in the buffer
+                self._audio_buffer.append(audio_data)
+                return
+
+        # Transcribe with local ASR
+        transcript = await self._transcribe_with_local_asr(audio_data)
+        if not transcript:
+            logger.warning("Local ASR returned no transcription")
+            return
+
+        # Show transcription in UI
+        await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
+
+        # Generate response with local LLM
+        if self._local_llm_client:
+            await self._generate_local_response(transcript)
+        else:
+            logger.warning("Local LLM not available, cannot generate response")
+
+    async def _generate_local_response(self, user_message: str) -> None:
+        """Generate a response using the local LLM and send to Chatterbox.
+
+        Args:
+            user_message: The user's transcribed message.
+
+        """
+        if not self._local_llm_client:
+            logger.warning("Local LLM client not available")
+            return
+
+        try:
+            # Add user message to conversation history
+            self._conversation_history.append({"role": "user", "content": user_message})
+
+            # Build messages with system prompt
+            messages = [
+                {"role": "system", "content": get_session_instructions()},
+                *self._conversation_history[-20:]  # Keep last 20 messages for context
+            ]
+
+            logger.debug("Calling local LLM with %d messages", len(messages))
+
+            # Call local LLM (no tool support - using base instruct model)
+            response = await self._local_llm_client.chat.completions.create(
+                model=self._local_llm_model,
+                messages=messages,
+                max_tokens=512,
+                temperature=0.7,
+            )
+
+            choice = response.choices[0]
+            assistant_message = choice.message
+
+            # Get the text content
+            text_response = assistant_message.content
+            if text_response:
+                # Clean up Qwen thinking tags if present
+                if "<think>" in text_response:
+                    # Remove thinking section
+                    import re
+                    text_response = re.sub(r'<think>.*?</think>', '', text_response, flags=re.DOTALL).strip()
+
+                logger.info("Local LLM response: %s", text_response[:100])
+
+                # Add to conversation history
+                self._conversation_history.append({"role": "assistant", "content": text_response})
+
+                # Show in UI
+                await self.output_queue.put(
+                    AdditionalOutputs({"role": "assistant", "content": text_response})
+                )
+
+                # Synthesize with Chatterbox
+                if self._chatterbox_endpoint:
+                    await self._synthesize_with_chatterbox(text_response)
+
+        except Exception as e:
+            logger.error("Local LLM generation failed: %s", e)
+            await self.output_queue.put(
+                AdditionalOutputs({"role": "assistant", "content": f"[error] LLM failed: {e}"})
+            )
 
     async def apply_personality(self, profile: str | None) -> str:
         """Apply a new personality (profile) at runtime if possible.
@@ -148,6 +599,12 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
     async def start_up(self) -> None:
         """Start the handler with minimal retries on unexpected websocket closure."""
+        # In full local mode, skip OpenAI entirely
+        if self._is_full_local_mode:
+            logger.info("Starting in FULL LOCAL MODE - no OpenAI connection needed")
+            await self._run_local_only_session()
+            return
+
         openai_api_key = config.OPENAI_API_KEY
         if self.gradio_mode and not openai_api_key:
             # api key was not found in .env or in the environment variables
@@ -229,38 +686,84 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         except Exception as e:
             logger.warning("_restart_session failed: %s", e)
 
+    async def _run_local_only_session(self) -> None:
+        """Run in full local mode without any OpenAI connection.
+
+        This handles the entire pipeline locally:
+        - Energy-based VAD for speech start detection
+        - Smart-turn VAD for turn completion
+        - Local ASR (GLM-ASR-Nano)
+        - Local LLM (Qwen via vLLM)
+        - Local TTS (Chatterbox)
+        """
+        logger.info("Local-only session started - VAD, ASR, LLM, and TTS all running locally")
+
+        # Signal that we're ready to receive audio
+        self._connected_event.set()
+
+        # The audio processing happens in receive() which is called by the audio input stream
+        # We just need to keep this session alive
+        while not self._shutdown_requested:
+            await asyncio.sleep(0.1)
+
+        logger.info("Local-only session ended")
+
     async def _run_realtime_session(self) -> None:
         """Establish and manage a single realtime session."""
         async with self.client.realtime.connect(model=config.MODEL_NAME) as conn:
             try:
-                await conn.session.update(
-                    session={
-                        "type": "realtime",
-                        "instructions": get_session_instructions(),
-                        "audio": {
-                            "input": {
-                                "format": {
-                                    "type": "audio/pcm",
-                                    "rate": self.input_sample_rate,
-                                },
-                                "transcription": {"model": "gpt-4o-transcribe", "language": "en"},
-                                "turn_detection": {
-                                    "type": "server_vad",
-                                    "interrupt_response": True,
-                                },
-                            },
-                            "output": {
-                                "format": {
-                                    "type": "audio/pcm",
-                                    "rate": self.output_sample_rate,
-                                },
-                                "voice": get_session_voice(),
-                            },
+                # Build session config - conditionally include audio output based on Chatterbox
+                audio_config: dict[str, Any] = {
+                    "input": {
+                        "format": {
+                            "type": "audio/pcm",
+                            "rate": self.input_sample_rate,
                         },
-                        "tools": get_tool_specs(),  # type: ignore[typeddict-item]
-                        "tool_choice": "auto",
+                        "transcription": {"model": "gpt-4o-transcribe", "language": "en"},
+                        "turn_detection": {
+                            "type": "server_vad",
+                            "interrupt_response": True,
+                        },
                     },
-                )
+                }
+
+                # Only include audio output if NOT using Chatterbox TTS
+                if not self._chatterbox_endpoint:
+                    audio_config["output"] = {
+                        "format": {
+                            "type": "audio/pcm",
+                            "rate": self.output_sample_rate,
+                        },
+                        "voice": get_session_voice(),
+                    }
+
+                session_config: dict[str, Any] = {
+                    "type": "realtime",
+                    "instructions": get_session_instructions(),
+                    "audio": audio_config,
+                    "tools": get_tool_specs(),
+                    "tool_choice": "auto",
+                }
+
+                # When using local LLM, configure OpenAI for transcription only (no response generation)
+                if self._local_llm_client:
+                    # Minimal instructions since we won't use OpenAI's responses
+                    session_config["instructions"] = "You are a transcription service. Do not respond."
+                    # No tools - local LLM handles tool calls
+                    session_config["tools"] = []
+                    session_config["tool_choice"] = "none"
+                    # Remove audio output config - we don't want OpenAI to speak
+                    if "output" in session_config.get("audio", {}):
+                        del session_config["audio"]["output"]
+                    logger.info("Local LLM enabled - OpenAI transcription-only mode, local LLM will generate responses")
+                # When using Chatterbox only (no local LLM), keep OpenAI for LLM but use Chatterbox for TTS
+                elif self._chatterbox_endpoint:
+                    # Remove audio output - Chatterbox will handle TTS
+                    if "output" in session_config.get("audio", {}):
+                        del session_config["audio"]["output"]
+                    logger.info("Chatterbox TTS enabled - OpenAI LLM mode, Chatterbox will synthesize audio")
+
+                await conn.session.update(session=session_config)
                 logger.info(
                     "Realtime session initialized with profile=%r voice=%r",
                     getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None),
@@ -289,11 +792,29 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     if self.deps.head_wobbler is not None:
                         self.deps.head_wobbler.reset()
                     self.deps.movement_manager.set_listening(True)
-                    logger.debug("User speech started")
+                    # Start buffering for local ASR
+                    if self._local_asr_client:
+                        self._is_speech_active = True
+                        self._audio_buffer.clear()
+                        logger.debug("User speech started - buffering for local ASR")
+                    else:
+                        logger.debug("User speech started")
 
                 if event.type == "input_audio_buffer.speech_stopped":
                     self.deps.movement_manager.set_listening(False)
-                    logger.debug("User speech stopped - server will auto-commit with VAD")
+                    # If using local ASR, transcribe the buffered audio
+                    if self._local_asr_client and self._is_speech_active:
+                        self._is_speech_active = False
+                        if self._audio_buffer:
+                            audio_data = b''.join(self._audio_buffer)
+                            self._audio_buffer.clear()
+                            logger.info("User speech stopped - transcribing %d bytes with local ASR", len(audio_data))
+                            # Transcribe and generate response
+                            asyncio.create_task(self._process_local_asr(audio_data))
+                        else:
+                            logger.debug("User speech stopped - no audio buffered")
+                    else:
+                        logger.debug("User speech stopped - server will auto-commit with VAD")
 
                 if event.type in (
                     "response.audio.done",  # GA
@@ -305,13 +826,28 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                 if event.type == "response.created":
                     logger.debug("Response created")
+                    # When using local LLM, cancel OpenAI's auto-response
+                    if self._local_llm_client:
+                        response_id = getattr(event, "response", {})
+                        if hasattr(response_id, "id"):
+                            response_id = response_id.id
+                        elif isinstance(response_id, dict):
+                            response_id = response_id.get("id")
+                        if response_id:
+                            logger.debug("Cancelling OpenAI auto-response: %s", response_id)
+                            try:
+                                await self.connection.response.cancel()
+                            except Exception as e:
+                                logger.debug("Failed to cancel response (may already be done): %s", e)
 
                 if event.type == "response.done":
                     # Doesn't mean the audio is done playing
                     logger.debug("Response done")
 
-                # Handle partial transcription (user speaking in real-time)
+                # Handle partial transcription (user speaking in real-time) - skip if using local ASR
                 if event.type == "conversation.item.input_audio_transcription.partial":
+                    if self._local_asr_client:
+                        continue  # Skip OpenAI transcription when using local ASR
                     logger.debug(f"User partial transcript: {event.transcript}")
 
                     # Increment sequence
@@ -331,8 +867,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         self._emit_debounced_partial(event.transcript, current_sequence)
                     )
 
-                # Handle completed transcription (user finished speaking)
+                # Handle completed transcription (user finished speaking) - skip if using local ASR
                 if event.type == "conversation.item.input_audio_transcription.completed":
+                    if self._local_asr_client:
+                        logger.debug("Skipping OpenAI transcription (using local ASR)")
+                        continue  # Skip OpenAI transcription when using local ASR
                     logger.debug(f"User transcript: {event.transcript}")
 
                     # Cancel any pending partial emission
@@ -345,17 +884,51 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                     await self.output_queue.put(AdditionalOutputs({"role": "user", "content": event.transcript}))
 
-                # Handle assistant transcription
+                    # If using local LLM, generate response locally instead of waiting for OpenAI
+                    if self._local_llm_client and event.transcript and event.transcript.strip():
+                        logger.info("Using local LLM for response generation")
+                        asyncio.create_task(self._generate_local_response(event.transcript))
+
+                # Handle assistant transcription (skip if using local LLM - we handle responses ourselves)
                 if event.type in ("response.audio_transcript.done", "response.output_audio_transcript.done"):
+                    if self._local_llm_client:
+                        logger.debug("Skipping OpenAI assistant transcript (using local LLM)")
+                        continue
                     logger.debug(f"Assistant transcript: {event.transcript}")
                     await self.output_queue.put(AdditionalOutputs({"role": "assistant", "content": event.transcript}))
 
-                # Handle audio delta
+                    # If using Chatterbox TTS, synthesize the transcript
+                    if self._chatterbox_endpoint and event.transcript:
+                        asyncio.create_task(self._synthesize_with_chatterbox(event.transcript))
+
+                # Handle text-only responses (skip if using local LLM)
+                if event.type in (
+                    "response.text.done",
+                    "response.output_text.done",
+                    "response.content_part.done",
+                ):
+                    if self._local_llm_client:
+                        logger.debug("Skipping OpenAI text response (using local LLM)")
+                        continue
+                    # Only process if using Chatterbox without local LLM
+                    if self._chatterbox_endpoint:
+                        # Extract text from various event formats
+                        text = getattr(event, "text", None) or getattr(event, "content", None)
+                        if isinstance(text, dict):
+                            text = text.get("text")
+                        if text and isinstance(text, str):
+                            logger.debug(f"Assistant text response: {text}")
+                            await self.output_queue.put(AdditionalOutputs({"role": "assistant", "content": text}))
+                            asyncio.create_task(self._synthesize_with_chatterbox(text))
+
+                # Handle audio delta (skip if using Chatterbox TTS)
                 if event.type in ("response.audio.delta", "response.output_audio.delta"):
+                    if self._chatterbox_endpoint:
+                        # Skip OpenAI audio when using Chatterbox TTS
+                        continue
+
                     if self.deps.head_wobbler is not None:
                         self.deps.head_wobbler.feed(event.delta)
-                    self.last_activity_time = asyncio.get_event_loop().time()
-                    logger.debug("last activity time updated to %s", self.last_activity_time)
                     await self.output_queue.put(
                         (
                             self.output_sample_rate,
@@ -363,8 +936,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         ),
                     )
 
-                # ---- tool-calling plumbing ----
+                # ---- tool-calling plumbing (skip if using local LLM - it handles tools itself) ----
                 if event.type == "response.function_call_arguments.done":
+                    if self._local_llm_client:
+                        logger.debug("Skipping OpenAI tool call (using local LLM)")
+                        continue
                     tool_name = getattr(event, "name", None)
                     args_json_str = getattr(event, "arguments", None)
                     call_id = getattr(event, "call_id", None)
@@ -439,16 +1015,12 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 ),
                             )
 
-                    # if this tool call was triggered by an idle signal, don't make the robot speak
-                    # for other tool calls, let the robot reply out loud
-                    if self.is_idle_tool_call:
-                        self.is_idle_tool_call = False
-                    else:
-                        await self.connection.response.create(
-                            response={
-                                "instructions": "Use the tool result just returned and answer concisely in speech.",
-                            },
-                        )
+                    # Let the robot reply out loud after tool calls
+                    await self.connection.response.create(
+                        response={
+                            "instructions": "Use the tool result just returned and answer concisely in speech.",
+                        },
+                    )
 
                     # re synchronize the head wobble after a tool call that may have taken some time
                     if self.deps.head_wobbler is not None:
@@ -470,17 +1042,20 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
     # Microphone receive
     async def receive(self, frame: Tuple[int, NDArray[np.int16]]) -> None:
-        """Receive audio frame from the microphone and send it to the OpenAI server.
+        """Receive audio frame from the microphone and process it.
+
+        In full local mode, audio is processed entirely locally (VAD, ASR, LLM, TTS).
+        Otherwise, audio is sent to the OpenAI server for processing.
 
         Handles both mono and stereo audio formats, converting to the expected
-        mono format for OpenAI's API. Resamples if the input sample rate differs
-        from the expected rate.
+        mono format. Resamples if the input sample rate differs from the expected rate.
 
         Args:
             frame: A tuple containing (sample_rate, audio_data).
 
         """
-        if not self.connection:
+        # In local mode, we don't need an OpenAI connection
+        if not self.connection and not self._is_full_local_mode:
             return
 
         input_sample_rate, audio_frame = frame
@@ -501,6 +1076,50 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         # Cast if needed
         audio_frame = audio_to_int16(audio_frame)
 
+        # Local VAD: energy-based speech detection + smart-turn for completion
+        if self._local_vad_endpoint and self._local_asr_client:
+            # Calculate RMS energy
+            audio_float = audio_frame.astype(np.float32) / 32768.0
+            rms = np.sqrt(np.mean(audio_float ** 2))
+
+            if rms > self._vad_energy_threshold:
+                # Speech detected
+                self._vad_silence_frames = 0
+                self._vad_speech_frames += 1
+
+                if not self._is_speech_active and self._vad_speech_frames >= self._vad_min_speech_frames:
+                    # Speech started
+                    self._is_speech_active = True
+                    self._audio_buffer.clear()
+                    self.deps.movement_manager.set_listening(True)
+                    logger.info("Local VAD: speech started")
+
+                if self._is_speech_active:
+                    self._audio_buffer.append(audio_frame.tobytes())
+            else:
+                # Silence detected
+                if self._is_speech_active:
+                    self._audio_buffer.append(audio_frame.tobytes())  # Include trailing silence
+                    self._vad_silence_frames += 1
+
+                    if self._vad_silence_frames >= self._vad_silence_threshold and not self._vad_processing:
+                        # Enough silence - check with smart-turn VAD
+                        self._vad_processing = True
+                        audio_data = b''.join(self._audio_buffer)
+                        logger.info("Local VAD: silence detected, checking turn completion (%d bytes)", len(audio_data))
+
+                        # Process in background
+                        asyncio.create_task(self._process_with_local_vad(audio_data))
+                else:
+                    self._vad_speech_frames = 0  # Reset speech counter during silence
+
+            # Skip sending to OpenAI when using full local pipeline
+            return
+
+        # Buffer audio for local ASR if speech is active (fallback when using OpenAI VAD)
+        if self._local_asr_client and self._is_speech_active:
+            self._audio_buffer.append(audio_frame.tobytes())
+
         # Send to OpenAI (guard against races during reconnect)
         try:
             audio_message = base64.b64encode(audio_frame.tobytes()).decode("utf-8")
@@ -509,22 +1128,31 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             logger.debug("Dropping audio frame: connection not ready (%s)", e)
             return
 
+    async def _process_with_local_vad(self, audio_data: bytes) -> None:
+        """Process audio with local VAD check then ASR/LLM if turn complete."""
+        try:
+            is_complete = await self._check_turn_complete(audio_data)
+
+            if is_complete:
+                logger.info("Local VAD: turn complete, proceeding to ASR")
+                self._is_speech_active = False
+                self._vad_speech_frames = 0
+                self._audio_buffer.clear()
+                self.deps.movement_manager.set_listening(False)
+
+                # Process with ASR and LLM (skip VAD check since we just did it)
+                await self._process_local_asr(audio_data, check_vad=False)
+            else:
+                logger.info("Local VAD: turn incomplete, continuing to listen")
+                # Keep listening - don't clear buffer, just reset silence counter
+                self._vad_silence_frames = 0
+        finally:
+            self._vad_processing = False
+
     async def emit(self) -> Tuple[int, NDArray[np.int16]] | AdditionalOutputs | None:
         """Emit audio frame to be played by the speaker."""
         # sends to the stream the stuff put in the output queue by the openai event handler
         # This is called periodically by the fastrtc Stream
-
-        # Handle idle
-        idle_duration = asyncio.get_event_loop().time() - self.last_activity_time
-        if idle_duration > 15.0 and self.deps.movement_manager.is_idle():
-            try:
-                await self.send_idle_signal(idle_duration)
-            except Exception as e:
-                logger.warning("Idle signal skipped (connection closed?): %s", e)
-                return None
-
-            self.last_activity_time = asyncio.get_event_loop().time()  # avoid repeated resets
-
         return await wait_for_item(self.output_queue)  # type: ignore[no-any-return]
 
     async def shutdown(self) -> None:
@@ -568,7 +1196,14 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         Attempts to retrieve model metadata from the OpenAI Models API and look
         for any keys that might contain voice names. Falls back to a curated
         list known to work with realtime if discovery fails.
+
+        In full local mode with Chatterbox TTS, returns an empty list since
+        voice selection is handled via reference audio, not voice names.
         """
+        # In full local mode, Chatterbox uses reference audio instead of voice names
+        if self._is_full_local_mode:
+            return []
+
         # Conservative fallback list with default first
         fallback = [
             "cedar",
@@ -579,6 +1214,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             "sage",
             "coral",
         ]
+
+        # If client not initialized, return fallback
+        if not hasattr(self, "client") or self.client is None:
+            return fallback
+
         try:
             # Best effort discovery; safe-guarded for unexpected shapes
             model = await self.client.models.retrieve(config.MODEL_NAME)
@@ -628,28 +1268,6 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             return voices
         except Exception:
             return fallback
-
-    async def send_idle_signal(self, idle_duration: float) -> None:
-        """Send an idle signal to the openai server."""
-        logger.debug("Sending idle signal")
-        self.is_idle_tool_call = True
-        timestamp_msg = f"[Idle time update: {self.format_timestamp()} - No activity for {idle_duration:.1f}s] You've been idle for a while. Feel free to get creative - dance, show an emotion, look around, do nothing, or just be yourself!"
-        if not self.connection:
-            logger.debug("No connection, cannot send idle signal")
-            return
-        await self.connection.conversation.item.create(
-            item={
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": timestamp_msg}],
-            },
-        )
-        await self.connection.response.create(
-            response={
-                "instructions": "You MUST respond with function calls only - no speech or text. Choose appropriate actions for idle behavior.",
-                "tool_choice": "required",
-            },
-        )
 
     def _persist_api_key_if_needed(self) -> None:
         """Persist the API key into `.env` inside `instance_path/` when appropriate.

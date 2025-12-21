@@ -34,6 +34,28 @@ class Config:
     REACHY_MINI_CUSTOM_PROFILE = os.getenv("REACHY_MINI_CUSTOM_PROFILE")
     logger.debug(f"Custom Profile: {REACHY_MINI_CUSTOM_PROFILE}")
 
+    # Chatterbox TTS configuration (optional - when set, uses Chatterbox instead of OpenAI TTS)
+    CHATTERBOX_ENDPOINT = os.getenv("CHATTERBOX_ENDPOINT")  # e.g., "http://192.168.68.74:7860"
+    CHATTERBOX_REF_AUDIO = os.getenv("CHATTERBOX_REF_AUDIO")  # Optional reference audio path for voice cloning
+    if CHATTERBOX_ENDPOINT:
+        logger.info(f"Chatterbox TTS enabled at {CHATTERBOX_ENDPOINT}")
+
+    # Local LLM configuration (optional - when set, uses local LLM instead of OpenAI for conversation)
+    LOCAL_LLM_ENDPOINT = os.getenv("LOCAL_LLM_ENDPOINT")  # e.g., "http://192.168.68.74:8002/v1"
+    LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "Qwen3-30B")  # Model name served by vLLM
+    if LOCAL_LLM_ENDPOINT:
+        logger.info(f"Local LLM enabled at {LOCAL_LLM_ENDPOINT} with model {LOCAL_LLM_MODEL}")
+
+    # Local ASR configuration (optional - when set, uses local ASR instead of OpenAI for speech-to-text)
+    LOCAL_ASR_ENDPOINT = os.getenv("LOCAL_ASR_ENDPOINT")  # e.g., "http://192.168.68.74:7862"
+    if LOCAL_ASR_ENDPOINT:
+        logger.info(f"Local ASR enabled at {LOCAL_ASR_ENDPOINT}")
+
+    # Local VAD configuration (optional - smart turn detection to replace OpenAI VAD)
+    LOCAL_VAD_ENDPOINT = os.getenv("LOCAL_VAD_ENDPOINT")  # e.g., "http://192.168.68.74:7863"
+    if LOCAL_VAD_ENDPOINT:
+        logger.info(f"Local VAD enabled at {LOCAL_VAD_ENDPOINT}")
+
 
 config = Config()
 
