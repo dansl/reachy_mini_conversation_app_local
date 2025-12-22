@@ -150,18 +150,6 @@ See `profiles/example/` for reference.
 - Create new personalities directly from the UI
 - Changes apply immediately to current session
 
-## Jetson Deployment
-
-For detailed Jetson Nano setup, see **[JETSON_SETUP.md](JETSON_SETUP.md)**
-
-Quick guide:
-```bash
-# On Jetson Nano Super 8GB
-cp .env.jetson .env
-pip install -e ".[jetson]"
-ollama pull phi-3-mini-4k-instruct
-reachy-mini-conversation-app
-```
 
 **Expected performance:**
 - End-to-end latency: <3 seconds
