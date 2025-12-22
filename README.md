@@ -214,17 +214,11 @@ ruff check .
 pytest
 ```
 
-## Documentation
-
-- **[JETSON_SETUP.md](JETSON_SETUP.md)** - Jetson Nano deployment guide
-- **[MIGRATION_SUMMARY.md](MIGRATION_SUMMARY.md)** - Change log and technical details
-- **[FASTRTC_INTEGRATION.md](FASTRTC_INTEGRATION.md)** - FastRTC integration notes
-
 ## License
 
 Apache 2.0
 
 ---
 
-**Built for edge deployment** - Optimized for Jetson Nano, but runs on any hardware with 8GB+ RAM.
+**Built for edge deployment** - Optimized for any hardware with 8GB+ RAM.
 **
