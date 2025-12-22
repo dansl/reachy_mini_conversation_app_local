@@ -210,3 +210,4 @@ Apache 2.0
 
 **Built for edge deployment** - Optimized for any hardware with 8GB+ RAM.
 **
+** Thanks to muellerzr for his fork **
