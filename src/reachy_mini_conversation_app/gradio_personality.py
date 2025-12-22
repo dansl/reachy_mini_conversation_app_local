@@ -144,12 +144,15 @@ class PersonalityUI:
         async def _fetch_voices(selected: str) -> dict[str, Any]:
             try:
                 voices = await handler.get_available_voices()
+                # In full local mode, voices is empty - hide the dropdown
+                if not voices:
+                    return gr.update(choices=["(local TTS)"], value="(local TTS)", visible=False)
                 current = _read_voice_for(selected)
                 if current not in voices:
-                    current = "cedar"
-                return gr.update(choices=voices, value=current)
+                    current = voices[0] if voices else "cedar"
+                return gr.update(choices=voices, value=current, visible=True)
             except Exception:
-                return gr.update(choices=["cedar"], value="cedar")
+                return gr.update(choices=["cedar"], value="cedar", visible=True)
 
         def _available_tools_for(selected: str) -> tuple[list[str], list[str]]:
             shared: list[str] = []

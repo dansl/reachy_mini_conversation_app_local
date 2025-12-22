@@ -25,6 +25,7 @@ from reachy_mini_conversation_app.tools.core_tools import (
     get_tool_specs,
     dispatch_tool_call,
 )
+from reachy_mini_conversation_app.local_audio import LocalVAD, LocalASR, LocalTTS
 
 
 logger = logging.getLogger(__name__)
@@ -73,81 +74,82 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._shutdown_requested: bool = False
         self._connected_event: asyncio.Event = asyncio.Event()
 
-        # Chatterbox TTS (Gradio endpoint)
-        self._chatterbox_client: GradioClient | None = None
-        self._chatterbox_ref_audio: str | None = None
-        if config.CHATTERBOX_ENDPOINT:
-            # Reference audio for voice cloning
-            if config.CHATTERBOX_REF_AUDIO:
-                self._chatterbox_ref_audio = config.CHATTERBOX_REF_AUDIO
-            else:
-                # Use alfred voice file from project root
-                project_dir = Path(__file__).parent.parent.parent
-                alfred_path = project_dir / "alfred_1_isolated.wav"
-                if alfred_path.exists():
-                    self._chatterbox_ref_audio = str(alfred_path)
-                    logger.info("Using alfred voice for TTS: %s", self._chatterbox_ref_audio)
-            try:
-                self._chatterbox_client = GradioClient(config.CHATTERBOX_ENDPOINT)
-                logger.info("Chatterbox TTS client initialized at %s", config.CHATTERBOX_ENDPOINT)
-            except Exception as e:
-                logger.error("Failed to initialize Chatterbox TTS client: %s", e)
-                self._chatterbox_client = None
+        # =====================================================================
+        # LOCAL AUDIO COMPONENTS (for full local mode)
+        # =====================================================================
 
-        # Local LLM client (if configured) - uses OpenAI-compatible API (vLLM)
+        # Built-in Local VAD (always available)
+        self._local_vad = LocalVAD(
+            energy_threshold=config.VAD_ENERGY_THRESHOLD,
+            silence_duration=config.VAD_SILENCE_DURATION,
+            min_speech_duration=config.VAD_MIN_SPEECH_DURATION,
+            sample_rate=self.input_sample_rate,
+        )
+        self._audio_buffer: list[bytes] = []  # Buffer for audio during speech
+        self._is_speech_active: bool = False
+        self._vad_processing: bool = False  # Prevent concurrent processing
+
+        # External VAD endpoint (optional - for smart turn detection)
+        self._local_vad_endpoint: str | None = config.LOCAL_VAD_ENDPOINT
+        if self._local_vad_endpoint:
+            logger.info("External VAD enabled at %s", self._local_vad_endpoint)
+
+        # Built-in Local ASR (Distil-Whisper - lightweight for edge)
+        self._local_asr: LocalASR | None = None
+
+        if config.FULL_LOCAL_MODE:
+            self._local_asr = LocalASR(
+                model_name=config.DISTIL_WHISPER_MODEL,
+                language=config.WHISPER_LANGUAGE,
+            )
+            logger.info("Built-in ASR (Distil-Whisper) initialized: %s model", config.DISTIL_WHISPER_MODEL)
+
+        # Built-in Local TTS (Kokoro via FastRTC - lightweight for edge)
+        self._local_tts: LocalTTS | None = None
+
+        if config.FULL_LOCAL_MODE:
+            # Use built-in Kokoro via FastRTC
+            self._local_tts = LocalTTS(
+                output_sample_rate=self.output_sample_rate,
+                voice=config.KOKORO_VOICE,
+                speed=config.KOKORO_SPEED,
+            )
+            logger.info("Built-in TTS initialized: Kokoro via FastRTC (voice: %s)", config.KOKORO_VOICE)
+
+        # =====================================================================
+        # LOCAL LLM CLIENT (LM Studio, Ollama, or vLLM)
+        # =====================================================================
         self._local_llm_client: AsyncOpenAI | None = None
-        self._local_llm_model: str = config.LOCAL_LLM_MODEL or "Qwen3-30B"
+        self._local_llm_model: str = config.LOCAL_LLM_MODEL or "local-model"
+        self._local_llm_provider: str = config.LLM_PROVIDER or "vllm"
         self._conversation_history: list[dict[str, Any]] = []
         self._pending_response_id: str | None = None  # Track OpenAI response to cancel
+
         if config.LOCAL_LLM_ENDPOINT:
             try:
+                # Both LM Studio and Ollama use OpenAI-compatible APIs
                 self._local_llm_client = AsyncOpenAI(
                     base_url=config.LOCAL_LLM_ENDPOINT,
-                    api_key="not-needed",  # vLLM doesn't require API key
+                    api_key="not-needed",  # Local LLMs don't require API key
                 )
-                logger.info("Local LLM client initialized at %s with model %s",
-                           config.LOCAL_LLM_ENDPOINT, self._local_llm_model)
+                provider_name = config.LLM_PROVIDER.upper() if config.LLM_PROVIDER else "Local LLM"
+                logger.info("%s client initialized at %s with model %s",
+                           provider_name, config.LOCAL_LLM_ENDPOINT, self._local_llm_model)
             except Exception as e:
                 logger.error("Failed to initialize local LLM client: %s", e)
                 self._local_llm_client = None
 
-        # Local ASR client (if configured) - uses Gradio API (GLM-ASR-Nano)
-        self._local_asr_client: GradioClient | None = None
-        self._audio_buffer: list[bytes] = []  # Buffer for audio during speech
-        self._is_speech_active: bool = False
-        if config.LOCAL_ASR_ENDPOINT:
-            try:
-                self._local_asr_client = GradioClient(config.LOCAL_ASR_ENDPOINT)
-                logger.info("Local ASR client initialized at %s", config.LOCAL_ASR_ENDPOINT)
-            except Exception as e:
-                logger.error("Failed to initialize local ASR client: %s", e)
-                self._local_asr_client = None
-
-        # Local VAD endpoint (if configured) - Flask API for smart turn detection
-        self._local_vad_endpoint: str | None = config.LOCAL_VAD_ENDPOINT
-        # Local VAD state for energy-based speech detection
-        self._vad_energy_threshold: float = 0.01  # RMS threshold for speech detection
-        self._vad_silence_frames: int = 0  # Count of consecutive silent frames
-        self._vad_silence_threshold: int = 15  # Frames of silence before checking turn completion (~0.5s at 30fps)
-        self._vad_min_speech_frames: int = 5  # Minimum frames of speech before considering it valid
-        self._vad_speech_frames: int = 0  # Count of speech frames
-        self._vad_processing: bool = False  # Prevent concurrent processing
-        if self._local_vad_endpoint:
-            logger.info("Local VAD enabled at %s (with energy-based speech detection)", self._local_vad_endpoint)
-
         # Log if full local mode is enabled
         if self._is_full_local_mode:
-            logger.info("FULL LOCAL MODE: Audio will NOT be sent to OpenAI")
+            logger.info("=" * 60)
+            logger.info("FULL LOCAL MODE: No OpenAI connection required")
+            logger.info("=" * 60)
 
     @property
     def _is_full_local_mode(self) -> bool:
         """Check if we're in full local mode (no data sent to OpenAI)."""
-        return bool(
-            self._local_vad_endpoint
-            and self._local_asr_client
-            and self._local_llm_client
-            and self._chatterbox_client
-        )
+        # Always True - fully local operation only
+        return True
 
     def copy(self) -> "OpenaiRealtimeHandler":
         """Create a copy of the handler."""
@@ -392,7 +394,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             return True  # Assume complete on error
 
     async def _transcribe_with_local_asr(self, audio_data: bytes) -> str | None:
-        """Transcribe audio using local ASR (GLM-ASR-Nano).
+        """Transcribe audio using local ASR (Distil-Whisper).
 
         Args:
             audio_data: Raw PCM audio bytes (16-bit, 24kHz, mono)
@@ -400,8 +402,21 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         Returns:
             Transcribed text or None if failed
         """
+        # Use built-in Distil-Whisper
+        if self._local_asr:
+            try:
+                transcript = await self._local_asr.transcribe(audio_data, self.input_sample_rate)
+                if transcript:
+                    return transcript
+                logger.warning("Built-in ASR returned empty result")
+                return None
+            except Exception as e:
+                logger.error("Built-in ASR transcription failed: %s", e)
+                return None
+
+        # Fall back to external Gradio ASR
         if not self._local_asr_client:
-            logger.warning("Local ASR client not available")
+            logger.warning("No ASR provider available")
             return None
 
         try:
@@ -419,7 +434,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
             logger.debug("Saved audio buffer to %s (%d bytes)", temp_path, len(audio_data))
 
-            # Call local ASR via Gradio
+            # Call external ASR via Gradio
             from gradio_client import handle_file
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
@@ -443,14 +458,14 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 if transcript.startswith("[") and transcript.endswith("]"):
                     logger.warning("ASR returned placeholder: %s", transcript)
                     return None
-                logger.info("Local ASR transcription: %s", transcript)
+                logger.info("External ASR transcription: %s", transcript)
                 return transcript
 
-            logger.warning("Local ASR returned empty result")
+            logger.warning("External ASR returned empty result")
             return None
 
         except Exception as e:
-            logger.error("Local ASR transcription failed: %s", e)
+            logger.error("External ASR transcription failed: %s", e)
             return None
 
     async def _process_local_asr(self, audio_data: bytes, check_vad: bool = True) -> None:
@@ -523,11 +538,14 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             # Get the text content
             text_response = assistant_message.content
             if text_response:
-                # Clean up Qwen thinking tags if present
+                # Clean up thinking tags from various models (Qwen, DeepSeek, etc.)
+                import re
+                # Remove <think>...</think> tags (Qwen style)
                 if "<think>" in text_response:
-                    # Remove thinking section
-                    import re
                     text_response = re.sub(r'<think>.*?</think>', '', text_response, flags=re.DOTALL).strip()
+                # Remove <thinking>...</thinking> tags (other models)
+                if "<thinking>" in text_response:
+                    text_response = re.sub(r'<thinking>.*?</thinking>', '', text_response, flags=re.DOTALL).strip()
 
                 logger.info("Local LLM response: %s", text_response[:100])
 
@@ -539,15 +557,47 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     AdditionalOutputs({"role": "assistant", "content": text_response})
                 )
 
-                # Synthesize with Chatterbox
-                if self._chatterbox_client:
-                    await self._synthesize_with_chatterbox(text_response)
+                # Synthesize with local TTS
+                await self._synthesize_locally(text_response)
 
         except Exception as e:
             logger.error("Local LLM generation failed: %s", e)
             await self.output_queue.put(
                 AdditionalOutputs({"role": "assistant", "content": f"[error] LLM failed: {e}"})
             )
+
+    async def _synthesize_locally(self, text: str) -> None:
+        """Synthesize text using the configured local TTS provider.
+
+        Args:
+            text: The text to synthesize.
+        """
+        if not text or not text.strip():
+            return
+
+        # Use built-in local TTS (Kokoro via FastRTC)
+        if self._local_tts:
+            try:
+                audio_data = await self._local_tts.synthesize(text)
+                if audio_data is not None:
+                    # Feed to head wobbler if available
+                    if self.deps.head_wobbler is not None:
+                        self.deps.head_wobbler.feed(base64.b64encode(audio_data.tobytes()).decode("utf-8"))
+
+                    # Queue audio in chunks for smoother playback
+                    chunk_size = 4800  # 200ms at 24kHz
+                    for i in range(0, len(audio_data), chunk_size):
+                        chunk = audio_data[i : i + chunk_size]
+                        await self.output_queue.put(
+                            (self.output_sample_rate, chunk.reshape(1, -1)),
+                        )
+                    logger.debug("Local TTS synthesis complete")
+                else:
+                    logger.warning("Local TTS returned no audio")
+            except Exception as e:
+                logger.error("Local TTS synthesis failed: %s", e)
+        else:
+            logger.warning("No TTS provider available")
 
     async def apply_personality(self, profile: str | None) -> str:
         """Apply a new personality (profile) at runtime if possible.
@@ -1097,48 +1147,37 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         # Cast if needed
         audio_frame = audio_to_int16(audio_frame)
 
-        # Local VAD: energy-based speech detection + smart-turn for completion
-        if self._local_vad_endpoint and self._local_asr_client:
-            # Calculate RMS energy
-            audio_float = audio_frame.astype(np.float32) / 32768.0
-            rms = np.sqrt(np.mean(audio_float ** 2))
+        # Full local mode: use built-in VAD + ASR + LLM + TTS
+        if self._is_full_local_mode:
+            # Process with built-in VAD
+            speech_started, speech_ended = self._local_vad.process(audio_frame)
 
-            if rms > self._vad_energy_threshold:
-                # Speech detected
-                self._vad_silence_frames = 0
-                self._vad_speech_frames += 1
+            if speech_started:
+                self._is_speech_active = True
+                self._audio_buffer.clear()
+                self.deps.movement_manager.set_listening(True)
+                logger.info("VAD: speech started")
 
-                if not self._is_speech_active and self._vad_speech_frames >= self._vad_min_speech_frames:
-                    # Speech started
-                    self._is_speech_active = True
-                    self._audio_buffer.clear()
-                    self.deps.movement_manager.set_listening(True)
-                    logger.info("Local VAD: speech started")
+            if self._is_speech_active:
+                self._audio_buffer.append(audio_frame.tobytes())
 
-                if self._is_speech_active:
-                    self._audio_buffer.append(audio_frame.tobytes())
-            else:
-                # Silence detected
-                if self._is_speech_active:
-                    self._audio_buffer.append(audio_frame.tobytes())  # Include trailing silence
-                    self._vad_silence_frames += 1
+            if speech_ended and not self._vad_processing:
+                self._vad_processing = True
+                self._is_speech_active = False
+                self.deps.movement_manager.set_listening(False)
 
-                    if self._vad_silence_frames >= self._vad_silence_threshold and not self._vad_processing:
-                        # Enough silence - check with smart-turn VAD
-                        self._vad_processing = True
-                        audio_data = b''.join(self._audio_buffer)
-                        logger.info("Local VAD: silence detected, checking turn completion (%d bytes)", len(audio_data))
+                audio_data = b''.join(self._audio_buffer)
+                self._audio_buffer.clear()
+                logger.info("VAD: speech ended (%d bytes)", len(audio_data))
 
-                        # Process in background
-                        asyncio.create_task(self._process_with_local_vad(audio_data))
-                else:
-                    self._vad_speech_frames = 0  # Reset speech counter during silence
+                # Process in background (ASR -> LLM -> TTS)
+                asyncio.create_task(self._process_local_speech(audio_data))
 
-            # Skip sending to OpenAI when using full local pipeline
+            # Skip sending to OpenAI in full local mode
             return
 
         # Buffer audio for local ASR if speech is active (fallback when using OpenAI VAD)
-        if self._local_asr_client and self._is_speech_active:
+        if (self._local_asr or self._local_asr_client) and self._is_speech_active:
             self._audio_buffer.append(audio_frame.tobytes())
 
         # Send to OpenAI (guard against races during reconnect)
@@ -1148,6 +1187,31 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         except Exception as e:
             logger.debug("Dropping audio frame: connection not ready (%s)", e)
             return
+
+    async def _process_local_speech(self, audio_data: bytes) -> None:
+        """Process speech audio: ASR -> LLM -> TTS.
+
+        Args:
+            audio_data: Raw PCM audio bytes from the speech buffer.
+        """
+        try:
+            # Transcribe with local ASR
+            transcript = await self._transcribe_with_local_asr(audio_data)
+            if not transcript:
+                logger.warning("ASR returned no transcription")
+                return
+
+            # Show transcription in UI
+            await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
+
+            # Generate response with local LLM
+            if self._local_llm_client:
+                await self._generate_local_response(transcript)
+            else:
+                logger.warning("Local LLM not available, cannot generate response")
+
+        finally:
+            self._vad_processing = False
 
     async def _process_with_local_vad(self, audio_data: bytes) -> None:
         """Process audio with local VAD check then ASR/LLM if turn complete."""

@@ -20,20 +20,24 @@ dependencies = [
     #Environment variables
     "python-dotenv",
 
-    #OpenAI
-    "openai>=2.1",
-
     #Reachy mini
     "reachy_mini_dances_library",
     "reachy_mini_toolbox",
     "reachy_mini>=1.2.3rc1",
     "eclipse-zenoh~=1.7.0",
     "gradio_client>=1.13.3",
+
+    #Local Audio (Always included for fully local operation)
+    "distil-whisper-fastrtc",
+    "torch",
+    "transformers",
+    "accelerate",
+    "scipy",
 ]
 
 [project.optional-dependencies]
 reachy_mini_wireless = [
-  "PyGObject>=3.42.2,<=3.46.0", 
+  "PyGObject>=3.42.2,<=3.46.0",
   "gst-signalling>=1.1.2",
 ]
 local_vision = ["torch", "transformers", "num2words"]
@@ -43,6 +47,10 @@ all_vision = [
   "torch", "transformers", "num2words",
   "ultralytics", "supervision",
   "mediapipe==0.10.14",
+]
+# Jetson optimization extras (ONNX runtime with CUDA support)
+jetson = [
+  "onnxruntime-gpu",  # ONNX with CUDA for Jetson
 ]
 
 [dependency-groups]
