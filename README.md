@@ -1,14 +1,13 @@
-**# Reachy Mini Conversation App
+# Reachy Mini Conversation App with Vision
 
-**Fully local conversational AI for Reachy Mini robot** - combining lightweight speech recognition, text-to-speech, and local LLM with choreographed motion libraries.
-
-![Reachy Mini Dance](docs/assets/reachy_mini_dance.gif)
+**Fully local conversational AI for Reachy Mini robot** - Combining lightweight speech recognition, text-to-speech, vision and local LLM with choreographed motion libraries.
 
 ## Features
 
 - 🎯 **100% Local Operation** - No cloud dependencies, runs entirely on-device
 - 🎤 **Real-time Audio** - Low-latency speech-to-text (Distil-Whisper) and text-to-speech (Kokoro)
 - 🤖 **Local LLM** - Powered by Ollama or LM Studio for on-device conversation
+- 👁️ **Local Vision** - Powered by HuggingFaceTB/SmolVLM2
 - 💃 **Motion System** - Layered motion with dances, emotions, face-tracking, and speech-reactive movement
 - 🎨 **Custom Personalities** - Easy profile system for different robot behaviors
 - 🔧 **Edge-Optimized** - Designed for Jetson Nano and similar edge devices
@@ -16,8 +15,17 @@
 ## Prerequisites
 
 > [!IMPORTANT]
-> **Install Reachy Mini SDK first**: [github.com/pollen-robotics/reachy_mini](https://github.com/pollen-robotics/reachy_mini/)
+> **Install Reachy Mini SDK first**: [Install Guide](https://huggingface.co/docs/reachy_mini/SDK/installation) - [ReachyMini Repo](https://github.com/pollen-robotics/reachy_mini/)
 >
+> ```
+> pip install "reachy-mini"
+> ```
+>
+> For Wireless Reachy, you will also need Gstreamer installed via [Homebrew](https://brew.sh)
+> ```
+> brew install gstreamer libnice-gstreamer
+> ```
+> 
 > Works with:
 > - **Real hardware** - Physical Reachy Mini robot
 > - **Simulator** - Virtual Reachy Mini for testing
@@ -29,12 +37,15 @@
 ```bash
 # Clone repository
 git clone <repo-url>
-cd reachy_mini_conversation_app
+cd reachy_mini_conversation_app_local
 
-# Install dependencies
+# Install Requirements
+pip install -r requirements.txt
+
+# Normal Install
 pip install -e "."
 
-# For Jetson Nano with CUDA optimization:
+# OR - For Jetson Nano with CUDA optimization:
 pip install -e ".[jetson]"
 ```
 
@@ -43,7 +54,7 @@ pip install -e ".[jetson]"
 **Ollama (Recommended):**
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
-ollama pull phi-3-mini-4k-instruct
+ollama pull gemma3:1b
 ```
 
 **Or LM Studio:**
@@ -57,7 +68,8 @@ ollama pull phi-3-mini-4k-instruct
 # Copy example config
 cp .env.example .env
 
-# Edit if needed (defaults work for most setups)
+# Edit .env
+# You will need a HuggingFace API token to download local models. Add it to the HF_TOKEN in .env
 nano .env
 ```
 
@@ -209,5 +221,5 @@ Apache 2.0
 ---
 
 **Built for edge deployment** - Optimized for any hardware with 8GB+ RAM.
-**
-** Thanks to muellerzr for his fork **
+
+**Thanks to muellerzr and dwain-barnes for their forks**
