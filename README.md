@@ -77,12 +77,12 @@ nano .env
 
 **Console mode (headless):**
 ```bash
-reachy-mini-conversation-app
+reachy-mini-conversation-app --local-vision
 ```
 
 **Web UI mode (required for simulator):**
 ```bash
-reachy-mini-conversation-app --gradio
+reachy-mini-conversation-app --gradio --local-vision
 ```
 
 Access at `http://localhost:7860`
