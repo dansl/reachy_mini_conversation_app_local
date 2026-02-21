@@ -154,6 +154,7 @@ toml==0.10.2
 tomlkit==0.13.3
 torch==2.10.0
 torchaudio==2.10.0
+torchvision==0.25.0
 tqdm==4.67.3
 transformers==5.2.0
 typer==0.24.0
