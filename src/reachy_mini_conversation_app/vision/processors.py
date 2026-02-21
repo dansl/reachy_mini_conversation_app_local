@@ -1,20 +1,19 @@
-import os
-import time
 import base64
 import logging
+import os
 import threading
-from typing import Any, Dict
+import time
 from dataclasses import dataclass
+from typing import Any, Dict
 
 import cv2
 import numpy as np
 import torch
-from numpy.typing import NDArray
-from transformers import AutoProcessor, AutoModelForImageTextToText
 from huggingface_hub import snapshot_download
+from numpy.typing import NDArray
+from transformers import AutoModelForImageTextToText, AutoProcessor
 
 from reachy_mini_conversation_app.config import config
-
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +59,9 @@ class VisionProcessor:
     def initialize(self) -> bool:
         """Load model and processor onto the selected device."""
         try:
-            logger.info(f"Loading SmolVLM2 model on {self.device} (HF_HOME={config.HF_HOME})")
+            logger.info(
+                f"Loading {self.model_path} model on {self.device} (HF_HOME={config.HF_HOME})"
+            )
             self.processor = AutoProcessor.from_pretrained(self.model_path)  # type: ignore
 
             # Select dtype depending on device
@@ -78,7 +79,9 @@ class VisionProcessor:
                 model_kwargs["_attn_implementation"] = "flash_attention_2"
 
             # Load model weights
-            self.model = AutoModelForImageTextToText.from_pretrained(self.model_path, **model_kwargs).to(self.device)  # type: ignore
+            self.model = AutoModelForImageTextToText.from_pretrained(
+                self.model_path, **model_kwargs
+            ).to(self.device)  # type: ignore
 
             if self.model is not None:
                 self.model.eval()
@@ -134,7 +137,10 @@ class VisionProcessor:
                 )
 
                 # Move tensors to device WITHOUT forcing dtype (keeps input_ids as torch.long)
-                inputs = {k: (v.to(self.device) if hasattr(v, "to") else v) for k, v in inputs.items()}
+                inputs = {
+                    k: (v.to(self.device) if hasattr(v, "to") else v)
+                    for k, v in inputs.items()
+                }
 
                 with torch.no_grad():
                     generated_ids = self.model.generate(
@@ -252,7 +258,9 @@ class VisionManager:
                         )
 
                         # Only update if we got a valid response
-                        if description and not description.startswith(("Vision", "Failed", "Error")):
+                        if description and not description.startswith(
+                            ("Vision", "Failed", "Error")
+                        ):
                             self._last_processed_time = current_time
                             logger.debug(f"Vision update: {description}")
                         else:
@@ -295,18 +303,47 @@ def initialize_vision_manager(camera_worker: Any) -> VisionManager | None:
         os.environ["HF_HOME"] = cache_dir
         logger.info("HF_HOME set to %s", cache_dir)
 
-        # Download model to cache
+        # Set Hugging Face token if available
+        hf_token = os.environ.get("HF_TOKEN")
+        if not hf_token:
+            logger.warning(
+                "No HF_TOKEN found in environment. This may cause download failures."
+            )
+
+        # Download model to cache with better error handling
         logger.info(f"Downloading vision model {model_id} to cache...")
-        snapshot_download(
-            repo_id=model_id,
-            repo_type="model",
-            cache_dir=cache_dir,
-        )
-        logger.info(f"Model {model_id} downloaded to {cache_dir}")
+
+        try:
+            from huggingface_hub import snapshot_download
+
+            model_path = snapshot_download(
+                repo_id=model_id,
+                repo_type="model",
+                cache_dir=cache_dir,
+                token=hf_token,
+                force_download=False,  # Use cached version if available
+                resume_download=True,  # Resume interrupted downloads
+            )
+            logger.info(f"Model {model_id} downloaded to {model_path}")
+        except Exception as e:
+            logger.error(f"Failed to download model with token: {e}")
+            # Try without token
+            try:
+                model_path = snapshot_download(
+                    repo_id=model_id,
+                    repo_type="model",
+                    cache_dir=cache_dir,
+                    force_download=False,
+                    resume_download=True,
+                )
+                logger.info(f"Model {model_id} downloaded to {model_path}")
+            except Exception as e2:
+                logger.error(f"Failed to download model without token: {e2}")
+                raise Exception(f"Could not download model {model_id}: {e2}")
 
         # Configure vision processing
         vision_config = VisionConfig(
-            model_path=model_id,
+            model_path=model_path,
             vision_interval=5.0,
             max_new_tokens=64,
             jpeg_quality=85,
