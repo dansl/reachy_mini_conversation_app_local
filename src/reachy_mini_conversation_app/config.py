@@ -18,6 +18,8 @@ else:
 
 
 class Config:
+	OPENAI_API_KEY = ""
+
     """Configuration class for the conversation app."""
 
     # =========================================================================
