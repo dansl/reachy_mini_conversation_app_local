@@ -28,6 +28,7 @@ distil-whisper-fastrtc==0.1.0.post1
 distro==1.9.0
 dlinfo==2.0.0
 dnspython==2.8.0
+docopt==0.6.2
 eclipse-zenoh==1.7.2
 espeakng-loader==0.2.4
 etils==1.13.0
@@ -73,6 +74,7 @@ msgpack==1.1.2
 mujoco==3.3.0
 multidict==6.7.1
 networkx==3.6.1
+num2words==0.5.14
 numba==0.64.0
 numpy==2.4.2
 onnxruntime==1.24.2
