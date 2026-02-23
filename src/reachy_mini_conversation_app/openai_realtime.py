@@ -97,24 +97,22 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         # Built-in Local ASR (Distil-Whisper - lightweight for edge)
         self._local_asr: LocalASR | None = None
 
-        if config.FULL_LOCAL_MODE:
-            self._local_asr = LocalASR(
-                model_name=config.DISTIL_WHISPER_MODEL,
-                language=config.WHISPER_LANGUAGE,
-            )
-            logger.info("Built-in ASR (Distil-Whisper) initialized: %s model", config.DISTIL_WHISPER_MODEL)
+        self._local_asr = LocalASR(
+            model_name=config.DISTIL_WHISPER_MODEL,
+            language=config.WHISPER_LANGUAGE,
+        )
+        logger.info("Built-in ASR (Distil-Whisper) initialized: %s model", config.DISTIL_WHISPER_MODEL)
 
         # Built-in Local TTS (Kokoro via FastRTC - lightweight for edge)
         self._local_tts: LocalTTS | None = None
 
-        if config.FULL_LOCAL_MODE:
-            # Use built-in Kokoro via FastRTC
-            self._local_tts = LocalTTS(
-                output_sample_rate=self.output_sample_rate,
-                voice=config.KOKORO_VOICE,
-                speed=config.KOKORO_SPEED,
-            )
-            logger.info("Built-in TTS initialized: Kokoro via FastRTC (voice: %s)", config.KOKORO_VOICE)
+        # Use built-in Kokoro via FastRTC
+        self._local_tts = LocalTTS(
+            output_sample_rate=self.output_sample_rate,
+            voice=config.KOKORO_VOICE,
+            speed=config.KOKORO_SPEED,
+        )
+        logger.info("Built-in TTS initialized: Kokoro via FastRTC (voice: %s)", config.KOKORO_VOICE)
 
         # =====================================================================
         # LOCAL LLM CLIENT (LM Studio, Ollama, or vLLM)
@@ -143,17 +141,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 logger.error("Failed to initialize local LLM client: %s", e)
                 self._local_llm_client = None
 
-        # Log if full local mode is enabled
-        if self._is_full_local_mode:
-            logger.info("=" * 60)
-            logger.info("FULL LOCAL MODE: No OpenAI connection required")
-            logger.info("=" * 60)
-
-    @property
-    def _is_full_local_mode(self) -> bool:
-        """Check if we're in full local mode (no data sent to OpenAI)."""
-        # Always True - fully local operation only
-        return True
+        logger.info("=" * 60)
+        logger.info("FULL LOCAL MODE: No OpenAI connection required")
+        logger.info("=" * 60)
 
     def copy(self) -> "OpenaiRealtimeHandler":
         """Create a copy of the handler."""
@@ -169,11 +159,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         4. Finally fall back to space boundaries
 
         Args:
-            text: The text to split.
-            max_chars: Maximum characters per chunk (default 250 for fast response).
+                text: The text to split.
+                max_chars: Maximum characters per chunk (default 250 for fast response).
 
         Returns:
-            List of text chunks to synthesize separately.
+                List of text chunks to synthesize separately.
         """
         import re
 
@@ -234,118 +224,14 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
         return chunks
 
-    async def _synthesize_with_chatterbox(self, text: str) -> None:
-        """Synthesize text using Chatterbox TTS and stream audio for immediate playback.
-
-        Uses waterfall chunking to split text at natural boundaries for faster
-        time-to-first-audio while maintaining natural speech flow.
-
-        Args:
-            text: The text to synthesize.
-
-        """
-        if not self._chatterbox_client:
-            logger.warning("Chatterbox client not configured, skipping TTS")
-            return
-
-        # Split into optimal chunks using waterfall approach
-        chunks = self._split_into_chunks(text)
-        logger.info("TTS: input text (%d chars): %s", len(text), text[:100])
-        logger.info(
-            "TTS: split into %d chunks: %s", len(chunks), [c[:30] + "..." if len(c) > 30 else c for c in chunks]
-        )
-
-        for i, chunk in enumerate(chunks):
-            logger.info("TTS: synthesizing chunk %d/%d: %s", i + 1, len(chunks), chunk[:50])
-            await self._synthesize_sentence(chunk)
-
-    async def _synthesize_sentence(self, text: str) -> None:
-        """Synthesize a single sentence using Chatterbox Gradio endpoint.
-
-        Args:
-            text: The sentence to synthesize.
-        """
-        if not self._chatterbox_client:
-            return
-
-        try:
-            logger.debug("TTS for sentence: %s", text[:50])
-
-            # Run the blocking Gradio client call in a thread pool
-            from gradio_client import handle_file
-
-            # Wrap the reference audio file for Gradio
-            ref_audio = handle_file(self._chatterbox_ref_audio) if self._chatterbox_ref_audio else None
-
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: self._chatterbox_client.predict(
-                    text,  # text
-                    ref_audio,  # audio_prompt_path (wrapped)
-                    0.8,  # temperature
-                    0,  # seed_num
-                    0.0,  # min_p
-                    0.95,  # top_p
-                    1000,  # top_k
-                    1.2,  # repetition_penalty
-                    True,  # norm_loudness
-                    fn_index=9,
-                ),
-            )
-
-            # Handle different Gradio return formats
-            if isinstance(result, str):
-                # It's a file path - read the audio file
-                import scipy.io.wavfile as wavfile
-
-                sample_rate, audio_data = wavfile.read(result)
-            elif isinstance(result, tuple) and len(result) >= 2:
-                sample_rate, audio_data = result[0], result[1]
-            elif isinstance(result, np.ndarray):
-                sample_rate = 24000
-                audio_data = result
-            else:
-                logger.error("Unexpected Chatterbox result format: %s", type(result))
-                return
-
-            # Convert to numpy array if needed
-            if not isinstance(audio_data, np.ndarray):
-                audio_data = np.array(audio_data)
-
-            # Resample to output sample rate if different
-            if sample_rate != self.output_sample_rate:
-                num_samples = int(len(audio_data) * self.output_sample_rate / sample_rate)
-                audio_data = resample(audio_data, num_samples)
-
-            # Convert to int16
-            audio_data = audio_to_int16(audio_data)
-
-            # Feed to head wobbler if available
-            if self.deps.head_wobbler is not None:
-                self.deps.head_wobbler.feed(base64.b64encode(audio_data.tobytes()).decode("utf-8"))
-
-            # Queue audio in chunks for smoother playback
-            chunk_size = 4800  # 200ms at 24kHz
-            for i in range(0, len(audio_data), chunk_size):
-                chunk = audio_data[i : i + chunk_size]
-                await self.output_queue.put(
-                    (self.output_sample_rate, chunk.reshape(1, -1)),
-                )
-
-            logger.debug("TTS sentence complete: %s", text[:30])
-
-        except Exception as e:
-            logger.error("Chatterbox TTS synthesis failed: %s", e)
-
     async def _check_turn_complete(self, audio_data: bytes) -> bool:
         """Check if the user's turn is complete using local VAD.
 
         Args:
-            audio_data: Raw PCM audio bytes (16-bit, 24kHz, mono)
+                audio_data: Raw PCM audio bytes (16-bit, 24kHz, mono)
 
         Returns:
-            True if turn is complete, False if user might still be speaking
+                True if turn is complete, False if user might still be speaking
         """
         if not self._local_vad_endpoint:
             return True  # No VAD configured, assume complete
@@ -407,10 +293,10 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         """Transcribe audio using local ASR (Distil-Whisper).
 
         Args:
-            audio_data: Raw PCM audio bytes (16-bit, 24kHz, mono)
+                audio_data: Raw PCM audio bytes (16-bit, 24kHz, mono)
 
         Returns:
-            Transcribed text or None if failed
+                Transcribed text or None if failed
         """
         # Use built-in Distil-Whisper
         if self._local_asr:
@@ -484,8 +370,8 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         """Process audio with local ASR and generate response with local LLM.
 
         Args:
-            audio_data: Raw PCM audio bytes from the speech buffer.
-            check_vad: Whether to check VAD first (default True).
+                audio_data: Raw PCM audio bytes from the speech buffer.
+                check_vad: Whether to check VAD first (default True).
         """
         # Check if turn is complete using local VAD
         if check_vad and self._local_vad_endpoint:
@@ -517,7 +403,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         """Generate a response using the local LLM and send to Chatterbox.
 
         Args:
-            user_message: The user's transcribed message.
+                user_message: The user's transcribed message.
 
         """
         if not self._local_llm_client:
@@ -547,6 +433,32 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
             choice = response.choices[0]
             assistant_message = choice.message
+
+            logger.info("Received tool calls from LLM: %s", assistant_message.tool_calls)
+            if assistant_message.tool_calls:
+                logger.info("Received tool calls from LLM: %s", assistant_message.tool_calls)
+                tool_results = []
+                for tool_call in assistant_message.tool_calls:
+                    tool_name = tool_call.function.name
+                    args_str = tool_call.function.arguments
+                    logger.debug("Executing tool: %s with args: %s", tool_name, args_str)
+
+                    try:
+                        tool_result = await dispatch_tool_call(tool_name, args_str, self.deps)
+                        logger.debug("Tool '%s' result: %s", tool_name, tool_result)
+                    except Exception as e:
+                        logger.error("Tool '%s' failed: %s", tool_name, e)
+                        tool_result = {"error": str(e)}
+
+                    tool_results.append(tool_result)
+
+                # Now send the tool results back to the LLM for a final response
+                # You may need to add these results as a new message to conversation history
+                # But the current approach might not work with Ollama natively unless it supports
+                # multi-turn tool calling properly.
+
+                # For now, just log the results and proceed
+                logger.info("Tool results: %s", tool_results)
 
             # Get the text content
             text_response = assistant_message.content
@@ -582,7 +494,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         """Synthesize text using the configured local TTS provider.
 
         Args:
-            text: The text to synthesize.
+                text: The text to synthesize.
         """
         if not text or not text.strip():
             return
@@ -682,59 +594,8 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
     async def start_up(self) -> None:
         """Start the handler with minimal retries on unexpected websocket closure."""
-        # In full local mode, skip OpenAI entirely
-        if self._is_full_local_mode:
-            logger.info("Starting in FULL LOCAL MODE - no OpenAI connection needed")
-            await self._run_local_only_session()
-            return
-
-        openai_api_key = config.OPENAI_API_KEY
-        if self.gradio_mode and not openai_api_key:
-            # api key was not found in .env or in the environment variables
-            await self.wait_for_args()  # type: ignore[no-untyped-call]
-            args = list(self.latest_args)
-            textbox_api_key = args[3] if len(args[3]) > 0 else None
-            if textbox_api_key is not None:
-                openai_api_key = textbox_api_key
-                self._key_source = "textbox"
-                self._provided_api_key = textbox_api_key
-            else:
-                openai_api_key = config.OPENAI_API_KEY
-        else:
-            if not openai_api_key or not openai_api_key.strip():
-                # In headless console mode, LocalStream now blocks startup until the key is provided.
-                # However, unit tests may invoke this handler directly with a stubbed client.
-                # To keep tests hermetic without requiring a real key, fall back to a placeholder.
-                logger.warning("OPENAI_API_KEY missing. Proceeding with a placeholder (tests/offline).")
-                openai_api_key = "DUMMY"
-
-        self.client = AsyncOpenAI(api_key=openai_api_key)
-
-        max_attempts = 3
-        for attempt in range(1, max_attempts + 1):
-            try:
-                await self._run_realtime_session()
-                # Normal exit from the session, stop retrying
-                return
-            except ConnectionClosedError as e:
-                # Abrupt close (e.g., "no close frame received or sent") → retry
-                logger.warning("Realtime websocket closed unexpectedly (attempt %d/%d): %s", attempt, max_attempts, e)
-                if attempt < max_attempts:
-                    # exponential backoff with jitter
-                    base_delay = 2 ** (attempt - 1)  # 1s, 2s, 4s, 8s, etc.
-                    jitter = random.uniform(0, 0.5)
-                    delay = base_delay + jitter
-                    logger.info("Retrying in %.1f seconds...", delay)
-                    await asyncio.sleep(delay)
-                    continue
-                raise
-            finally:
-                # never keep a stale reference
-                self.connection = None
-                try:
-                    self._connected_event.clear()
-                except Exception:
-                    pass
+        await self._run_local_only_session()
+        return
 
     async def _restart_session(self) -> None:
         """Force-close the current session and start a fresh one in background.
@@ -1136,13 +997,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         mono format. Resamples if the input sample rate differs from the expected rate.
 
         Args:
-            frame: A tuple containing (sample_rate, audio_data).
+                frame: A tuple containing (sample_rate, audio_data).
 
         """
-        # In local mode, we don't need an OpenAI connection
-        if not self.connection and not self._is_full_local_mode:
-            return
-
         input_sample_rate, audio_frame = frame
 
         # Reshape if needed
@@ -1162,51 +1019,35 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         audio_frame = audio_to_int16(audio_frame)
 
         # Full local mode: use built-in VAD + ASR + LLM + TTS
-        if self._is_full_local_mode:
-            # Process with built-in VAD
-            speech_started, speech_ended = self._local_vad.process(audio_frame)
+        # Process with built-in VAD
+        speech_started, speech_ended = self._local_vad.process(audio_frame)
 
-            if speech_started:
-                self._is_speech_active = True
-                self._audio_buffer.clear()
-                self.deps.movement_manager.set_listening(True)
-                logger.info("VAD: speech started")
+        if speech_started:
+            self._is_speech_active = True
+            self._audio_buffer.clear()
+            self.deps.movement_manager.set_listening(True)
+            logger.info("VAD: speech started")
 
-            if self._is_speech_active:
-                self._audio_buffer.append(audio_frame.tobytes())
-
-            if speech_ended and not self._vad_processing:
-                self._vad_processing = True
-                self._is_speech_active = False
-                self.deps.movement_manager.set_listening(False)
-
-                audio_data = b"".join(self._audio_buffer)
-                self._audio_buffer.clear()
-                logger.info("VAD: speech ended (%d bytes)", len(audio_data))
-
-                # Process in background (ASR -> LLM -> TTS)
-                asyncio.create_task(self._process_local_speech(audio_data))
-
-            # Skip sending to OpenAI in full local mode
-            return
-
-        # Buffer audio for local ASR if speech is active (fallback when using OpenAI VAD)
-        if (self._local_asr or self._local_asr_client) and self._is_speech_active:
+        if self._is_speech_active:
             self._audio_buffer.append(audio_frame.tobytes())
 
-        # Send to OpenAI (guard against races during reconnect)
-        try:
-            audio_message = base64.b64encode(audio_frame.tobytes()).decode("utf-8")
-            await self.connection.input_audio_buffer.append(audio=audio_message)
-        except Exception as e:
-            logger.debug("Dropping audio frame: connection not ready (%s)", e)
-            return
+        if speech_ended and not self._vad_processing:
+            self._vad_processing = True
+            self._is_speech_active = False
+            self.deps.movement_manager.set_listening(False)
+
+            audio_data = b"".join(self._audio_buffer)
+            self._audio_buffer.clear()
+            logger.info("VAD: speech ended (%d bytes)", len(audio_data))
+
+            # Process in background (ASR -> LLM -> TTS)
+            asyncio.create_task(self._process_local_speech(audio_data))
 
     async def _process_local_speech(self, audio_data: bytes) -> None:
         """Process speech audio: ASR -> LLM -> TTS.
 
         Args:
-            audio_data: Raw PCM audio bytes from the speech buffer.
+                audio_data: Raw PCM audio bytes from the speech buffer.
         """
         try:
             # Transcribe with local ASR
@@ -1288,149 +1129,3 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         elapsed_seconds = loop_time - self.start_time
         dt = datetime.now()  # wall-clock
         return f"[{dt.strftime('%Y-%m-%d %H:%M:%S')} | +{elapsed_seconds:.1f}s]"
-
-    async def get_available_voices(self) -> list[str]:
-        """Try to discover available voices for the configured realtime model.
-
-        Attempts to retrieve model metadata from the OpenAI Models API and look
-        for any keys that might contain voice names. Falls back to a curated
-        list known to work with realtime if discovery fails.
-
-        In full local mode with Chatterbox TTS, returns an empty list since
-        voice selection is handled via reference audio, not voice names.
-        """
-        # In full local mode, Chatterbox uses reference audio instead of voice names
-        if self._is_full_local_mode:
-            return []
-
-        # Conservative fallback list with default first
-        fallback = [
-            "cedar",
-            "alloy",
-            "aria",
-            "ballad",
-            "verse",
-            "sage",
-            "coral",
-        ]
-
-        # If client not initialized, return fallback
-        if not hasattr(self, "client") or self.client is None:
-            return fallback
-
-        try:
-            # Best effort discovery; safe-guarded for unexpected shapes
-            model = await self.client.models.retrieve(config.MODEL_NAME)
-            # Try common serialization paths
-            raw = None
-            for attr in ("model_dump", "to_dict"):
-                fn = getattr(model, attr, None)
-                if callable(fn):
-                    try:
-                        raw = fn()
-                        break
-                    except Exception:
-                        pass
-            if raw is None:
-                try:
-                    raw = dict(model)
-                except Exception:
-                    raw = None
-            # Scan for voice candidates
-            candidates: set[str] = set()
-
-            def _collect(obj: object) -> None:
-                try:
-                    if isinstance(obj, dict):
-                        for k, v in obj.items():
-                            kl = str(k).lower()
-                            if "voice" in kl and isinstance(v, (list, tuple)):
-                                for item in v:
-                                    if isinstance(item, str):
-                                        candidates.add(item)
-                                    elif isinstance(item, dict) and "name" in item and isinstance(item["name"], str):
-                                        candidates.add(item["name"])
-                            else:
-                                _collect(v)
-                    elif isinstance(obj, (list, tuple)):
-                        for it in obj:
-                            _collect(it)
-                except Exception:
-                    pass
-
-            if isinstance(raw, dict):
-                _collect(raw)
-            # Ensure default present and stable order
-            voices = sorted(candidates) if candidates else fallback
-            if "cedar" not in voices:
-                voices = ["cedar", *[v for v in voices if v != "cedar"]]
-            return voices
-        except Exception:
-            return fallback
-
-    def _persist_api_key_if_needed(self) -> None:
-        """Persist the API key into `.env` inside `instance_path/` when appropriate.
-
-        - Only runs in Gradio mode when key came from the textbox and is non-empty.
-        - Only saves if `self.instance_path` is not None.
-        - Writes `.env` to `instance_path/.env` (does not overwrite if it already exists).
-        - If `instance_path/.env.example` exists, copies its contents while overriding OPENAI_API_KEY.
-        """
-        try:
-            if not self.gradio_mode:
-                logger.warning("Not in Gradio mode; skipping API key persistence.")
-                return
-
-            if self._key_source != "textbox":
-                logger.info("API key not provided via textbox; skipping persistence.")
-                return
-
-            key = (self._provided_api_key or "").strip()
-            if not key:
-                logger.warning("No API key provided via textbox; skipping persistence.")
-                return
-            if self.instance_path is None:
-                logger.warning("Instance path is None; cannot persist API key.")
-                return
-
-            # Update the current process environment for downstream consumers
-            try:
-                import os
-
-                os.environ["OPENAI_API_KEY"] = key
-            except Exception:  # best-effort
-                pass
-
-            target_dir = Path(self.instance_path)
-            env_path = target_dir / ".env"
-            if env_path.exists():
-                # Respect existing user configuration
-                logger.info(".env already exists at %s; not overwriting.", env_path)
-                return
-
-            example_path = target_dir / ".env.example"
-            content_lines: list[str] = []
-            if example_path.exists():
-                try:
-                    content = example_path.read_text(encoding="utf-8")
-                    content_lines = content.splitlines()
-                except Exception as e:
-                    logger.warning("Failed to read .env.example at %s: %s", example_path, e)
-
-            # Replace or append the OPENAI_API_KEY line
-            replaced = False
-            for i, line in enumerate(content_lines):
-                if line.strip().startswith("OPENAI_API_KEY="):
-                    content_lines[i] = f"OPENAI_API_KEY={key}"
-                    replaced = True
-                    break
-            if not replaced:
-                content_lines.append(f"OPENAI_API_KEY={key}")
-
-            # Ensure file ends with newline
-            final_text = "\n".join(content_lines) + "\n"
-            env_path.write_text(final_text, encoding="utf-8")
-            logger.info("Created %s and stored OPENAI_API_KEY for future runs.", env_path)
-        except Exception as e:
-            # Never crash the app for QoL persistence; just log.
-            logger.warning("Could not persist OPENAI_API_KEY to .env: %s", e)
