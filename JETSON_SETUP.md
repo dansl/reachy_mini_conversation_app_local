@@ -75,19 +75,18 @@ sudo nvpmodel -q
 
 ```bash
 cd ~
-git clone https://github.com/your-repo/reachy_mini_conversation_app.git
-cd reachy_mini_conversation_app
+git clone <repo-url>
+cd reachy_mini_conversation_app_local
 ```
 
 ### 2. Install Python Dependencies
 
 ```bash
-# Install uv (fast Python package manager)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-source $HOME/.cargo/env
+python -m venv reachy-mini-env    
+source reachy-mini-env/bin/activate
 
 # Install the app with Jetson optimizations
-uv pip install -e ".[jetson,all_vision]"
+pip install -e ".[jetson,local_vision]"
 ```
 
 **Note**: The `jetson` extra includes `onnxruntime-gpu` for CUDA acceleration.

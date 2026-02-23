@@ -39,14 +39,18 @@
 git clone <repo-url>
 cd reachy_mini_conversation_app_local
 
+# Setup python VENV
+python -m venv reachy-mini-env
+source reachy-mini-env/bin/activate
+
 # Install Requirements
 pip install -r requirements.txt
 
-# Normal Install
-pip install -e "."
+# Install project
+pip install -e ".[local_vision]"
 
 # OR - For Jetson Nano with CUDA optimization:
-pip install -e ".[jetson]"
+pip install -e ".[jetson,local_vision]"
 ```
 
 ### 2. Install Local LLM
