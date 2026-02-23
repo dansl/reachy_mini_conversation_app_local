@@ -8,24 +8,24 @@ from pathlib import Path
 from datetime import datetime
 
 import cv2
-import aiohttp
 import numpy as np
 import gradio as gr
+import aiohttp
 from openai import AsyncOpenAI
 from fastrtc import AdditionalOutputs, AsyncStreamHandler, wait_for_item, audio_to_int16
 from numpy.typing import NDArray
 from scipy.signal import resample
-from websockets.exceptions import ConnectionClosedError
 from gradio_client import Client as GradioClient
+from websockets.exceptions import ConnectionClosedError
 
 from reachy_mini_conversation_app.config import config
 from reachy_mini_conversation_app.prompts import get_session_voice, get_session_instructions
+from reachy_mini_conversation_app.local_audio import LocalASR, LocalTTS, LocalVAD
 from reachy_mini_conversation_app.tools.core_tools import (
     ToolDependencies,
     get_tool_specs,
     dispatch_tool_call,
 )
-from reachy_mini_conversation_app.local_audio import LocalVAD, LocalASR, LocalTTS
 
 
 logger = logging.getLogger(__name__)
@@ -133,8 +133,12 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     api_key="not-needed",  # Local LLMs don't require API key
                 )
                 provider_name = config.LLM_PROVIDER.upper() if config.LLM_PROVIDER else "Local LLM"
-                logger.info("%s client initialized at %s with model %s",
-                           provider_name, config.LOCAL_LLM_ENDPOINT, self._local_llm_model)
+                logger.info(
+                    "%s client initialized at %s with model %s",
+                    provider_name,
+                    config.LOCAL_LLM_ENDPOINT,
+                    self._local_llm_model,
+                )
             except Exception as e:
                 logger.error("Failed to initialize local LLM client: %s", e)
                 self._local_llm_client = None
@@ -186,10 +190,10 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
         # Waterfall punctuation priorities (strongest to weakest break points)
         waterfall = [
-            r'([.!?…]+[\"\'\)]?\s+)',  # Sentence endings (with optional quotes/parens)
-            r'([:;]\s+)',               # Clause separators
-            r'([,—]\s+)',               # Phrase separators
-            r'(\s+)',                   # Any whitespace (last resort)
+            r"([.!?…]+[\"\'\)]?\s+)",  # Sentence endings (with optional quotes/parens)
+            r"([:;]\s+)",  # Clause separators
+            r"([,—]\s+)",  # Phrase separators
+            r"(\s+)",  # Any whitespace (last resort)
         ]
 
         while remaining:
@@ -201,7 +205,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             best_break = None
             for pattern in waterfall:
                 # Find all matches within the max_chars window
-                matches = list(re.finditer(pattern, remaining[:max_chars + 50]))
+                matches = list(re.finditer(pattern, remaining[: max_chars + 50]))
                 if matches:
                     # Take the last match that's within or close to max_chars
                     for match in reversed(matches):
@@ -217,7 +221,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             else:
                 # No good break point found, force break at max_chars
                 # Try to at least break at a space
-                space_idx = remaining[:max_chars].rfind(' ')
+                space_idx = remaining[:max_chars].rfind(" ")
                 if space_idx > 20:
                     chunk = remaining[:space_idx].strip()
                     remaining = remaining[space_idx:].strip()
@@ -247,7 +251,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         # Split into optimal chunks using waterfall approach
         chunks = self._split_into_chunks(text)
         logger.info("TTS: input text (%d chars): %s", len(text), text[:100])
-        logger.info("TTS: split into %d chunks: %s", len(chunks), [c[:30] + "..." if len(c) > 30 else c for c in chunks])
+        logger.info(
+            "TTS: split into %d chunks: %s", len(chunks), [c[:30] + "..." if len(c) > 30 else c for c in chunks]
+        )
 
         for i, chunk in enumerate(chunks):
             logger.info("TTS: synthesizing chunk %d/%d: %s", i + 1, len(chunks), chunk[:50])
@@ -275,15 +281,15 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             result = await loop.run_in_executor(
                 None,
                 lambda: self._chatterbox_client.predict(
-                    text,                    # text
-                    ref_audio,               # audio_prompt_path (wrapped)
-                    0.8,                     # temperature
-                    0,                       # seed_num
-                    0.0,                     # min_p
-                    0.95,                    # top_p
-                    1000,                    # top_k
-                    1.2,                     # repetition_penalty
-                    True,                    # norm_loudness
+                    text,  # text
+                    ref_audio,  # audio_prompt_path (wrapped)
+                    0.8,  # temperature
+                    0,  # seed_num
+                    0.0,  # min_p
+                    0.95,  # top_p
+                    1000,  # top_k
+                    1.2,  # repetition_penalty
+                    True,  # norm_loudness
                     fn_index=9,
                 ),
             )
@@ -292,6 +298,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             if isinstance(result, str):
                 # It's a file path - read the audio file
                 import scipy.io.wavfile as wavfile
+
                 sample_rate, audio_data = wavfile.read(result)
             elif isinstance(result, tuple) and len(result) >= 2:
                 sample_rate, audio_data = result[0], result[1]
@@ -344,29 +351,32 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             return True  # No VAD configured, assume complete
 
         try:
-            import aiohttp
-            import tempfile
             import wave
+            import tempfile
+
+            import aiohttp
 
             # Save audio to temp WAV file for the VAD server
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                 temp_path = f.name
-                with wave.open(f, 'wb') as wav:
+                with wave.open(f, "wb") as wav:
                     wav.setnchannels(1)  # mono
                     wav.setsampwidth(2)  # 16-bit
                     wav.setframerate(self.input_sample_rate)  # 24kHz
                     wav.writeframes(audio_data)
 
             # Read the WAV file and encode as base64
-            with open(temp_path, 'rb') as f:
+            with open(temp_path, "rb") as f:
                 audio_bytes = f.read()
 
             import base64
-            audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+
+            audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
             # Clean up temp file
             try:
                 import os
+
                 os.unlink(temp_path)
             except Exception:
                 pass
@@ -376,7 +386,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 async with session.post(
                     f"{self._local_vad_endpoint}/predict",
                     json={"audio_base64": audio_b64},
-                    timeout=aiohttp.ClientTimeout(total=5.0)
+                    timeout=aiohttp.ClientTimeout(total=5.0),
                 ) as resp:
                     if resp.status == 200:
                         result = await resp.json()
@@ -420,13 +430,13 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             return None
 
         try:
-            import tempfile
             import wave
+            import tempfile
 
             # Save audio buffer to temp WAV file
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                 temp_path = f.name
-                with wave.open(f, 'wb') as wav:
+                with wave.open(f, "wb") as wav:
                     wav.setnchannels(1)  # mono
                     wav.setsampwidth(2)  # 16-bit
                     wav.setframerate(self.input_sample_rate)  # 24kHz
@@ -436,18 +446,20 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
             # Call external ASR via Gradio
             from gradio_client import handle_file
+
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None,
                 lambda: self._local_asr_client.predict(
                     handle_file(temp_path),  # Wrap file path for Gradio
                     fn_index=0,  # First (and only) function in the Interface
-                )
+                ),
             )
 
             # Clean up temp file
             try:
                 import os
+
                 os.unlink(temp_path)
             except Exception:
                 pass
@@ -519,7 +531,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             # Build messages with system prompt
             messages = [
                 {"role": "system", "content": get_session_instructions()},
-                *self._conversation_history[-20:]  # Keep last 20 messages for context
+                *self._conversation_history[-20:],  # Keep last 20 messages for context
             ]
 
             logger.debug("Calling local LLM with %d messages", len(messages))
@@ -530,6 +542,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 messages=messages,
                 max_tokens=512,
                 temperature=0.7,
+                tools=get_tool_specs(),
             )
 
             choice = response.choices[0]
@@ -540,12 +553,13 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             if text_response:
                 # Clean up thinking tags from various models (Qwen, DeepSeek, etc.)
                 import re
+
                 # Remove <think>...</think> tags (Qwen style)
                 if "<think>" in text_response:
-                    text_response = re.sub(r'<think>.*?</think>', '', text_response, flags=re.DOTALL).strip()
+                    text_response = re.sub(r"<think>.*?</think>", "", text_response, flags=re.DOTALL).strip()
                 # Remove <thinking>...</thinking> tags (other models)
                 if "<thinking>" in text_response:
-                    text_response = re.sub(r'<thinking>.*?</thinking>', '', text_response, flags=re.DOTALL).strip()
+                    text_response = re.sub(r"<thinking>.*?</thinking>", "", text_response, flags=re.DOTALL).strip()
 
                 logger.info("Local LLM response: %s", text_response[:100])
 
@@ -553,9 +567,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 self._conversation_history.append({"role": "assistant", "content": text_response})
 
                 # Show in UI
-                await self.output_queue.put(
-                    AdditionalOutputs({"role": "assistant", "content": text_response})
-                )
+                await self.output_queue.put(AdditionalOutputs({"role": "assistant", "content": text_response}))
 
                 # Synthesize with local TTS
                 await self._synthesize_locally(text_response)
@@ -826,7 +838,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     # Remove audio output config - we don't want OpenAI to speak
                     if "output" in session_config.get("audio", {}):
                         del session_config["audio"]["output"]
-                    logger.info("Local LLM enabled - OpenAI transcription-only mode, local LLM will generate responses")
+                    logger.info(
+                        "Local LLM enabled - OpenAI transcription-only mode, local LLM will generate responses"
+                    )
                 # When using Chatterbox only (no local LLM), keep OpenAI for LLM but use Chatterbox for TTS
                 elif self._chatterbox_client:
                     # Remove audio output - Chatterbox will handle TTS
@@ -877,7 +891,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     if self._local_asr_client and self._is_speech_active:
                         self._is_speech_active = False
                         if self._audio_buffer:
-                            audio_data = b''.join(self._audio_buffer)
+                            audio_data = b"".join(self._audio_buffer)
                             self._audio_buffer.clear()
                             logger.info("User speech stopped - transcribing %d bytes with local ASR", len(audio_data))
                             # Transcribe and generate response
@@ -1166,7 +1180,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 self._is_speech_active = False
                 self.deps.movement_manager.set_listening(False)
 
-                audio_data = b''.join(self._audio_buffer)
+                audio_data = b"".join(self._audio_buffer)
                 self._audio_buffer.clear()
                 logger.info("VAD: speech ended (%d bytes)", len(audio_data))
 

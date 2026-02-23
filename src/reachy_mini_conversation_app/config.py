@@ -53,7 +53,7 @@ class Config:
     LMSTUDIO_MODEL = os.getenv("LMSTUDIO_MODEL", "")
 
     # Ollama configuration
-    OLLAMA_ENDPOINT = os.getenv("OLLAMA_ENDPOINT", "http://localhost:11434/api")
+    OLLAMA_ENDPOINT = os.getenv("OLLAMA_ENDPOINT", "http://localhost:11434/v1")
     OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "")
 
     # Resolve LOCAL_LLM_ENDPOINT and LOCAL_LLM_MODEL based on provider selection
