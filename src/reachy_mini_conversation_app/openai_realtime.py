@@ -57,9 +57,6 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self.start_time = asyncio.get_event_loop().time()
         self.gradio_mode = gradio_mode
         self.instance_path = instance_path
-        # Track how the API key was provided (env vs textbox) and its value
-        self._key_source: Literal["env", "textbox"] = "env"
-        self._provided_api_key: str | None = None
 
         # Debouncing for partial transcripts
         self.partial_transcript_task: asyncio.Task[None] | None = None
@@ -716,9 +713,6 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None),
                     get_session_voice(),
                 )
-                # If we reached here, the session update succeeded which implies the API key worked.
-                # Persist the key to a newly created .env (copied from .env.example) if needed.
-                self._persist_api_key_if_needed()
             except Exception:
                 logger.exception("Realtime session.update failed; aborting startup")
                 return

@@ -23,8 +23,6 @@ class Config:
     # =========================================================================
     # FULL LOCAL MODE (ALWAYS ENABLED - No cloud dependencies)
     # =========================================================================
-    FULL_LOCAL_MODE = True  # Hardcoded for fully local operation
-    OPENAI_API_KEY = ""
     CUDA_SUPPORT = os.getenv("CUDA_SUPPORT", "false").lower().strip() in (
         "true",
         "1",

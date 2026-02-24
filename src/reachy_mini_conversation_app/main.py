@@ -11,7 +11,6 @@ from typing import Any, Dict, List, Optional
 import gradio as gr
 from fastapi import FastAPI
 from fastrtc import Stream
-from gradio.utils import get_space
 
 from reachy_mini import ReachyMini, ReachyMiniApp
 from reachy_mini_conversation_app.utils import (
@@ -114,12 +113,6 @@ def run(
     stream_manager: gr.Blocks | LocalStream | None = None
 
     if args.gradio:
-        api_key_textbox = gr.Textbox(
-            label="OPENAI API Key",
-            type="password",
-            value=os.getenv("OPENAI_API_KEY") if not get_space() else "",
-        )
-
         from reachy_mini_conversation_app.gradio_personality import PersonalityUI
 
         personality_ui = PersonalityUI()
@@ -131,7 +124,6 @@ def run(
             modality="audio",
             additional_inputs=[
                 chatbot,
-                api_key_textbox,
                 *personality_ui.additional_inputs_ordered(),
             ],
             additional_outputs=[chatbot],
