@@ -346,7 +346,6 @@ class LocalTTS:
             return None
 
     def _synthesize_sync(self, text: str) -> Optional[np.ndarray]:
-        """Synchronous synthesis (runs in executor)."""
         try:
             from scipy.signal import resample
 
