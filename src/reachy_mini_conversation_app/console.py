@@ -3,6 +3,7 @@
 In headless mode, there is no Gradio UI.
 """
 
+import os
 import sys
 import time
 import asyncio
@@ -10,27 +11,16 @@ import logging
 from typing import List, Optional
 from pathlib import Path
 
+from fastapi import FastAPI, Response
 from fastrtc import AdditionalOutputs, audio_to_float32
 from scipy.signal import resample
+from fastapi.responses import FileResponse, JSONResponse
+from starlette.staticfiles import StaticFiles
 
 from reachy_mini import ReachyMini
 from reachy_mini.media.media_manager import MediaBackend
 from reachy_mini_conversation_app.openai_realtime import OpenaiRealtimeHandler
 from reachy_mini_conversation_app.headless_personality_ui import mount_personality_routes
-
-
-try:
-    # FastAPI is provided by the Reachy Mini Apps runtime
-    from fastapi import FastAPI, Response
-    from pydantic import BaseModel
-    from fastapi.responses import FileResponse, JSONResponse
-    from starlette.staticfiles import StaticFiles
-except Exception:  # pragma: no cover - only loaded when settings_app is used
-    FastAPI = object  # type: ignore
-    FileResponse = object  # type: ignore
-    JSONResponse = object  # type: ignore
-    StaticFiles = object  # type: ignore
-    BaseModel = object  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -185,6 +175,12 @@ class LocalStream:
         def _favicon() -> Response:
             return Response(status_code=204)
 
+        # GET /status -> whether key is set
+        @self._settings_app.get("/status")
+        def _status() -> JSONResponse:
+            has_key = True
+            return JSONResponse({"has_key": has_key})
+
         # GET /ready -> whether backend finished loading tools
         @self._settings_app.get("/ready")
         def _ready() -> JSONResponse:
@@ -195,6 +191,32 @@ class LocalStream:
                 ready = False
             return JSONResponse({"ready": ready})
 
+        self._settings_initialized = True
+
+    def launch(self) -> None:
+        """Start the recorder/player and run the async processing loops."""
+        self._stop_event.clear()
+
+        # Try to load an existing instance .env first (covers subsequent runs)
+        if self._instance_path:
+            try:
+                from dotenv import load_dotenv
+
+                from reachy_mini_conversation_app.config import set_custom_profile
+
+                env_path = Path(self._instance_path) / ".env"
+                if env_path.exists():
+                    load_dotenv(dotenv_path=str(env_path), override=True)
+                    new_profile = os.getenv("REACHY_MINI_CUSTOM_PROFILE")
+                    if new_profile is not None:
+                        try:
+                            set_custom_profile(new_profile.strip() or None)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        self._init_settings_ui_if_needed()
         # Start media after key is set/available
         self._robot.media.start_recording()
         self._robot.media.start_playing()
