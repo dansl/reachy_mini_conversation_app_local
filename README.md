@@ -79,6 +79,8 @@ nano .env
 
 ### 4. Run
 
+NOTE: (Wireless Reachy) Make sure you "wake up" reachy via the app or [http://reachy-mini.local:8000](http://reachy-mini.local:8000) 
+
 **Console mode (headless):**
 ```bash
 reachy-mini-conversation-app --local-vision
@@ -89,7 +91,7 @@ reachy-mini-conversation-app --local-vision
 reachy-mini-conversation-app --gradio --local-vision
 ```
 
-Access at `http://localhost:7860`
+Access gradio site at `http://localhost:7860`
 
 ## Configuration
 
