@@ -342,6 +342,7 @@ class LocalStream:
             logger.info("OPENAI_API_KEY not set, attempting to download from HuggingFace...")
             try:
                 from gradio_client import Client
+
                 client = Client("HuggingFaceM4/gradium_setup")
                 key, status = client.predict(api_name="/claim_b_key")
                 if key and key.strip():

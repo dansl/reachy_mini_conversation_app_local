@@ -1,19 +1,19 @@
+import os
+import time
 import base64
 import logging
-import os
 import threading
-import time
-from dataclasses import dataclass
 from typing import Any, Dict
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
 import torch
-from huggingface_hub import snapshot_download
 from numpy.typing import NDArray
-from transformers import AutoModelForImageTextToText, AutoProcessor
+from transformers import AutoProcessor, AutoModelForImageTextToText
 
 from reachy_mini_conversation_app.config import config
+
 
 logger = logging.getLogger(__name__)
 

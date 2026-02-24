@@ -1,21 +1,17 @@
 import json
 import base64
-import random
 import asyncio
 import logging
 from typing import Any, Final, Tuple, Literal, Optional
-from pathlib import Path
 from datetime import datetime
 
 import cv2
 import numpy as np
 import gradio as gr
-import aiohttp
 from openai import AsyncOpenAI
 from fastrtc import AdditionalOutputs, AsyncStreamHandler, wait_for_item, audio_to_int16
 from numpy.typing import NDArray
 from scipy.signal import resample
-from gradio_client import Client as GradioClient
 from websockets.exceptions import ConnectionClosedError
 
 from reachy_mini_conversation_app.config import config
@@ -164,6 +160,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
         Returns:
                 List of text chunks to synthesize separately.
+
         """
         import re
 
@@ -232,6 +229,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
         Returns:
                 True if turn is complete, False if user might still be speaking
+
         """
         if not self._local_vad_endpoint:
             return True  # No VAD configured, assume complete
@@ -297,6 +295,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
         Returns:
                 Transcribed text or None if failed
+
         """
         # Use built-in Distil-Whisper
         if self._local_asr:
@@ -372,6 +371,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         Args:
                 audio_data: Raw PCM audio bytes from the speech buffer.
                 check_vad: Whether to check VAD first (default True).
+
         """
         # Check if turn is complete using local VAD
         if check_vad and self._local_vad_endpoint:
@@ -495,6 +495,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
         Args:
                 text: The text to synthesize.
+
         """
         if not text or not text.strip():
             return
@@ -1048,6 +1049,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
         Args:
                 audio_data: Raw PCM audio bytes from the speech buffer.
+
         """
         try:
             # Transcribe with local ASR

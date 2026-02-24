@@ -6,13 +6,9 @@ This module provides built-in local alternatives to cloud services:
 - TTS: Kokoro-82M for text-to-speech (lightweight, edge-optimized)
 """
 
-import io
 import re
-import wave
 import asyncio
 import logging
-import tempfile
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -32,27 +28,28 @@ def clean_text_for_speech(text: str) -> str:
 
     Returns:
         Cleaned text suitable for speech synthesis
+
     """
     # Remove content in parentheses like (Pauses, then softly)
-    text = re.sub(r'\([^)]*\)', '', text)
+    text = re.sub(r"\([^)]*\)", "", text)
 
     # Remove content in square brackets like [thinking]
-    text = re.sub(r'\[[^\]]*\]', '', text)
+    text = re.sub(r"\[[^\]]*\]", "", text)
 
     # Remove content in curly braces like {stage direction}
-    text = re.sub(r'\{[^}]*\}', '', text)
+    text = re.sub(r"\{[^}]*\}", "", text)
 
     # Remove asterisks used for emphasis like *italic* or **bold**
-    text = re.sub(r'\*+', '', text)
+    text = re.sub(r"\*+", "", text)
 
     # Remove underscores used for emphasis
-    text = re.sub(r'_+', '', text)
+    text = re.sub(r"_+", "", text)
 
     # Remove markdown headers
-    text = re.sub(r'^#+\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r"^#+\s*", "", text, flags=re.MULTILINE)
 
     # Remove excessive whitespace and newlines
-    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r"\s+", " ", text)
 
     # Trim leading/trailing whitespace
     text = text.strip()
@@ -77,6 +74,7 @@ class LocalVAD:
             silence_duration: Seconds of silence before considering speech ended
             min_speech_duration: Minimum seconds of speech to be valid
             sample_rate: Audio sample rate in Hz
+
         """
         self.energy_threshold = energy_threshold
         self.silence_duration = silence_duration
@@ -104,6 +102,7 @@ class LocalVAD:
 
         Returns:
             Tuple of (speech_started, speech_ended)
+
         """
         # Calculate frame duration
         frame_duration = len(audio_frame) / self.sample_rate
@@ -111,7 +110,7 @@ class LocalVAD:
 
         # Calculate RMS energy
         audio_float = audio_frame.astype(np.float32) / 32768.0
-        rms = np.sqrt(np.mean(audio_float ** 2))
+        rms = np.sqrt(np.mean(audio_float**2))
 
         speech_started = False
         speech_ended = False
@@ -163,6 +162,7 @@ class LocalASR:
             device: Device to use (auto, cpu, cuda)
             dtype: Data type (auto, float16, float32)
             language: Language code for transcription
+
         """
         self.model_name = model_name
         self.device = device
@@ -188,6 +188,7 @@ class LocalASR:
             if device == "auto":
                 try:
                     import torch
+
                     device = "cuda" if torch.cuda.is_available() else "cpu"
                 except ImportError:
                     device = "cpu"
@@ -195,8 +196,7 @@ class LocalASR:
             if dtype == "auto":
                 dtype = "float16" if device == "cuda" else "float32"
 
-            logger.info("Loading Distil-Whisper model '%s' on %s with %s...",
-                       self.model_name, device, dtype)
+            logger.info("Loading Distil-Whisper model '%s' on %s with %s...", self.model_name, device, dtype)
 
             self._model = DistilWhisperSTT(
                 model=self.model_name,
@@ -223,6 +223,7 @@ class LocalASR:
 
         Returns:
             Transcribed text or None if failed
+
         """
         if not self._ensure_initialized():
             return None
@@ -233,9 +234,7 @@ class LocalASR:
 
             # Run transcription in executor to not block
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None, self._transcribe_array, sample_rate, audio_array
-            )
+            result = await loop.run_in_executor(None, self._transcribe_array, sample_rate, audio_array)
 
             return result
 
@@ -280,6 +279,7 @@ class LocalTTS:
             output_sample_rate: Target sample rate for output audio
             voice: Voice to use (af_sarah, am_michael, bf_emma, etc.)
             speed: Speech speed multiplier (0.5-2.0)
+
         """
         self.output_sample_rate = output_sample_rate
         self.voice = voice
@@ -320,6 +320,7 @@ class LocalTTS:
 
         Returns:
             Audio samples as int16 numpy array, or None if failed
+
         """
         if not text or not text.strip():
             return None
@@ -405,6 +406,7 @@ def check_local_audio_support() -> dict[str, bool]:
 
     Returns:
         Dict with availability status for each component
+
     """
     support = {
         "vad": True,  # Built-in, always available
@@ -414,12 +416,14 @@ def check_local_audio_support() -> dict[str, bool]:
 
     try:
         from distil_whisper_fastrtc import DistilWhisperSTT
+
         support["asr_distil_whisper"] = True
     except ImportError:
         pass
 
     try:
         from transformers import AutoTokenizer, AutoModelForCausalLM
+
         support["tts_kokoro"] = True
     except ImportError:
         pass
