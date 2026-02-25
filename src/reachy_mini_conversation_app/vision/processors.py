@@ -59,9 +59,7 @@ class VisionProcessor:
     def initialize(self) -> bool:
         """Load model and processor onto the selected device."""
         try:
-            logger.info(
-                f"Loading {self.model_path} model on {self.device} (HF_HOME={config.HF_HOME})"
-            )
+            logger.info(f"Loading {self.model_path} model on {self.device} (HF_HOME={config.HF_HOME})")
             self.processor = AutoProcessor.from_pretrained(self.model_path)  # type: ignore
 
             # Select dtype depending on device
@@ -79,9 +77,7 @@ class VisionProcessor:
                 model_kwargs["_attn_implementation"] = "flash_attention_2"
 
             # Load model weights
-            self.model = AutoModelForImageTextToText.from_pretrained(
-                self.model_path, **model_kwargs
-            ).to(self.device)  # type: ignore
+            self.model = AutoModelForImageTextToText.from_pretrained(self.model_path, **model_kwargs).to(self.device)  # type: ignore
 
             if self.model is not None:
                 self.model.eval()
@@ -137,10 +133,7 @@ class VisionProcessor:
                 )
 
                 # Move tensors to device WITHOUT forcing dtype (keeps input_ids as torch.long)
-                inputs = {
-                    k: (v.to(self.device) if hasattr(v, "to") else v)
-                    for k, v in inputs.items()
-                }
+                inputs = {k: (v.to(self.device) if hasattr(v, "to") else v) for k, v in inputs.items()}
 
                 with torch.no_grad():
                     generated_ids = self.model.generate(
@@ -223,6 +216,7 @@ class VisionManager:
         self._last_processed_time = 0.0
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self.description = None
 
         # Initialize processor
         if not self.processor.initialize():
@@ -252,19 +246,17 @@ class VisionManager:
                 if current_time - self._last_processed_time >= self.vision_interval:
                     frame = self.camera.get_latest_frame()
                     if frame is not None:
-                        description = self.processor.process_image(
+                        self.description = self.processor.process_image(
                             frame,
                             "Briefly describe what you see in one sentence.",
                         )
 
                         # Only update if we got a valid response
-                        if description and not description.startswith(
-                            ("Vision", "Failed", "Error")
-                        ):
+                        if self.description and not self.description.startswith(("Vision", "Failed", "Error")):
                             self._last_processed_time = current_time
-                            logger.debug(f"Vision update: {description}")
+                            logger.debug(f"Vision update: {self.description}")
                         else:
-                            logger.warning(f"Invalid vision response: {description}")
+                            logger.warning(f"Invalid vision response: {self.description}")
 
                 time.sleep(1.0)  # Check every second
 
@@ -306,9 +298,7 @@ def initialize_vision_manager(camera_worker: Any) -> VisionManager | None:
         # Set Hugging Face token if available
         hf_token = os.environ.get("HF_TOKEN")
         if not hf_token:
-            logger.warning(
-                "No HF_TOKEN found in environment. This may cause download failures."
-            )
+            logger.warning("No HF_TOKEN found in environment. This may cause download failures.")
 
         # Download model to cache with better error handling
         logger.info(f"Downloading vision model {model_id} to cache...")

@@ -105,7 +105,9 @@ class BreathingMove(Move):  # type: ignore
 
             # Interpolate head pose
             head_pose = linear_pose_interpolation(
-                self.interpolation_start_pose, self.neutral_head_pose, interpolation_t,
+                self.interpolation_start_pose,
+                self.neutral_head_pose,
+                interpolation_t,
             )
 
             # Interpolate antennas
@@ -632,7 +634,9 @@ class MovementManager:
 
         return antennas_cmd
 
-    def _issue_control_command(self, head: NDArray[np.float32], antennas: Tuple[float, float], body_yaw: float) -> None:
+    def _issue_control_command(
+        self, head: NDArray[np.float32], antennas: Tuple[float, float], body_yaw: float
+    ) -> None:
         """Send the fused pose to the robot with throttled error logging."""
         try:
             self.current_robot.set_target(head=head, antennas=antennas, body_yaw=body_yaw)
@@ -652,7 +656,10 @@ class MovementManager:
                 self._last_commanded_pose = clone_full_body_pose((head, antennas, body_yaw))
 
     def _update_frequency_stats(
-        self, loop_start: float, prev_loop_start: float, stats: LoopFrequencyStats,
+        self,
+        loop_start: float,
+        prev_loop_start: float,
+        stats: LoopFrequencyStats,
     ) -> LoopFrequencyStats:
         """Update frequency statistics based on the current loop start time."""
         period = loop_start - prev_loop_start
@@ -689,17 +696,17 @@ class MovementManager:
         if loop_count % print_interval_loops != 0 or stats.count == 0:
             return
 
-        variance = stats.m2 / stats.count if stats.count > 0 else 0.0
-        lowest = stats.min_freq if stats.min_freq != float("inf") else 0.0
-        logger.debug(
-            "Loop freq - avg: %.2fHz, variance: %.4f, min: %.2fHz, last: %.2fHz, potential: %.2fHz, target: %.1fHz",
-            stats.mean,
-            variance,
-            lowest,
-            stats.last_freq,
-            stats.potential_freq,
-            self.target_frequency,
-        )
+        # variance = stats.m2 / stats.count if stats.count > 0 else 0.0
+        # lowest = stats.min_freq if stats.min_freq != float("inf") else 0.0
+        # logger.debug(
+        #     "Loop freq - avg: %.2fHz, variance: %.4f, min: %.2fHz, last: %.2fHz, potential: %.2fHz, target: %.1fHz",
+        #     stats.mean,
+        #     variance,
+        #     lowest,
+        #     stats.last_freq,
+        #     stats.potential_freq,
+        #     self.target_frequency,
+        # )
         stats.reset()
 
     def _update_face_tracking(self, current_time: float) -> None:

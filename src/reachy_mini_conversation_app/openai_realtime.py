@@ -30,7 +30,12 @@ OPEN_AI_OUTPUT_SAMPLE_RATE: Final[Literal[24000]] = 24000
 class OpenaiRealtimeHandler(AsyncStreamHandler):
     """An OpenAI realtime handler for fastrtc Stream."""
 
-    def __init__(self, deps: ToolDependencies, gradio_mode: bool = False, instance_path: Optional[str] = None):
+    def __init__(
+        self,
+        deps: ToolDependencies,
+        gradio_mode: bool = False,
+        instance_path: Optional[str] = None,
+    ):
         """Initialize the handler."""
         super().__init__(
             expected_layout="mono",
@@ -149,11 +154,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         4. Finally fall back to space boundaries
 
         Args:
-                text: The text to split.
-                max_chars: Maximum characters per chunk (default 250 for fast response).
+                        text: The text to split.
+                        max_chars: Maximum characters per chunk (default 250 for fast response).
 
         Returns:
-                List of text chunks to synthesize separately.
+                        List of text chunks to synthesize separately.
 
         """
         import re
@@ -219,10 +224,10 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         """Check if the user's turn is complete using local VAD.
 
         Args:
-                audio_data: Raw PCM audio bytes (16-bit, 24kHz, mono)
+                        audio_data: Raw PCM audio bytes (16-bit, 24kHz, mono)
 
         Returns:
-                True if turn is complete, False if user might still be speaking
+                        True if turn is complete, False if user might still be speaking
 
         """
         if not self._local_vad_endpoint:
@@ -285,10 +290,10 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         """Transcribe audio using local ASR (Distil-Whisper).
 
         Args:
-                audio_data: Raw PCM audio bytes (16-bit, 24kHz, mono)
+                        audio_data: Raw PCM audio bytes (16-bit, 24kHz, mono)
 
         Returns:
-                Transcribed text or None if failed
+                        Transcribed text or None if failed
 
         """
         # Use built-in Distil-Whisper
@@ -307,8 +312,8 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         """Process audio with local ASR and generate response with local LLM.
 
         Args:
-                audio_data: Raw PCM audio bytes from the speech buffer.
-                check_vad: Whether to check VAD first (default True).
+                        audio_data: Raw PCM audio bytes from the speech buffer.
+                        check_vad: Whether to check VAD first (default True).
 
         """
         # Check if turn is complete using local VAD
@@ -341,7 +346,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         """Generate a response using the local LLM and send to Chatterbox.
 
         Args:
-                user_message: The user's transcribed message.
+                        user_message: The user's transcribed message.
 
         """
         if not self._local_llm_client:
@@ -355,8 +360,22 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             # Build messages with system prompt
             messages = [
                 {"role": "system", "content": get_session_instructions()},
-                *self._conversation_history[-20:],  # Keep last 20 messages for context
             ]
+
+            vision_description = None
+            if self.deps.vision_manager is not None:
+                vision_description = self.deps.vision_manager.description
+            logger.debug(f"Vision Description from _generate_local_response: {vision_description}")
+            # Add vision description to context if available
+            if vision_description is not None:
+                logger.info(f"Camera Vision Description: {vision_description}")
+                vision_context = f"Your camera's vision description: {vision_description}"
+                messages.append({"role": "system", "content": vision_context})
+
+            # Then add conversation history
+            # messages.extend(self._conversation_history[-20:])  # Keep last 20 messages for context
+            messages.append({"role": "user", "content": user_message})
+            logger.debug(f"MESSAGES: {messages}")
 
             logger.debug("Calling local LLM with %d messages", len(messages))
 
@@ -432,7 +451,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         """Synthesize text using the configured local TTS provider.
 
         Args:
-                text: The text to synthesize.
+                        text: The text to synthesize.
 
         """
         if not text or not text.strip():
@@ -445,6 +464,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 if audio_data is not None:
                     # Feed to head wobbler if available
                     if self.deps.head_wobbler is not None:
+                        self.deps.head_wobbler.reset()
                         self.deps.head_wobbler.feed(base64.b64encode(audio_data.tobytes()).decode("utf-8"))
 
                     # Queue audio in chunks for smoother playback
@@ -560,6 +580,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 self._connected_event.clear()
             except Exception:
                 pass
+
+            # Reset head wobbler before starting new session
+            if self.deps.head_wobbler is not None:
+                self.deps.head_wobbler.reset()
+
             asyncio.create_task(self._run_realtime_session(), name="openai-realtime-restart")
             try:
                 await asyncio.wait_for(self._connected_event.wait(), timeout=5.0)
@@ -663,7 +688,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         mono format. Resamples if the input sample rate differs from the expected rate.
 
         Args:
-                frame: A tuple containing (sample_rate, audio_data).
+                        frame: A tuple containing (sample_rate, audio_data).
 
         """
         input_sample_rate, audio_frame = frame
@@ -713,7 +738,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         """Process speech audio: ASR -> LLM -> TTS.
 
         Args:
-                audio_data: Raw PCM audio bytes from the speech buffer.
+                        audio_data: Raw PCM audio bytes from the speech buffer.
 
         """
         try:

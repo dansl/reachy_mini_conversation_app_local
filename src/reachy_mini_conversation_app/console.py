@@ -342,7 +342,7 @@ class LocalStream:
 
                 self._robot.media.push_audio_sample(audio_frame)
 
-            else:
-                logger.debug("Ignoring output type=%s", type(handler_output).__name__)
+            # else:
+            # logger.debug("Ignoring output type=%s", type(handler_output).__name__)
 
             await asyncio.sleep(0)  # yield to event loop
