@@ -74,7 +74,7 @@ class Config:
     _legacy_model = os.getenv("LOCAL_LLM_MODEL")
     if _legacy_endpoint and not LLM_PROVIDER:
         LOCAL_LLM_ENDPOINT = _legacy_endpoint
-        LOCAL_LLM_MODEL = _legacy_model or "Qwen3-30B"
+        LOCAL_LLM_MODEL = _legacy_model or "Qwen3-4B"
         logger.info(f"Local LLM enabled at {LOCAL_LLM_ENDPOINT} with model {LOCAL_LLM_MODEL} (legacy config)")
 
     # =========================================================================
