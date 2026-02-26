@@ -100,10 +100,11 @@ The app auto-configures for your hardware. Key settings in `.env`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLM_PROVIDER` | `ollama` | LLM backend (`ollama` or `lmstudio`) |
-| `OLLAMA_MODEL` | `phi-3-mini-4k-instruct` | Ollama model name |
+| `OLLAMA_MODEL` | `qwen3:1.7b` | Ollama model name |
 | `DISTIL_WHISPER_MODEL` | `distil-small.en` | Speech recognition model |
 | `KOKORO_VOICE` | `af_sarah` | TTS voice (af_sarah, am_michael, etc.) |
-| `JETSON_OPTIMIZE` | `true` | Enable Jetson-specific optimizations |
+| `CUDA_SUPPORT` | `false` | If running on NVIDIA hardware |
+| `LOCAL_VISION_MODEL` | `SmolVLM2-2.2B-Instruct` | Vision recognition model |
 
 See `.env.jetson` for Jetson Nano optimized settings.
 
@@ -115,7 +116,6 @@ See `.env.jetson` for Jetson Nano optimized settings.
 | `--head-tracker {yolo,mediapipe}` | Enable face tracking |
 | `--local-vision` | Use local vision model (requires `local_vision` extra) |
 | `--no-camera` | Disable camera (audio-only mode) |
-| `--wireless-version` | Use GStreamer for wireless robots |
 | `--debug` | Enable verbose logging |
 
 ## Optional Extras
@@ -130,10 +130,6 @@ pip install -e ".[all_vision]"        # All vision features
 # Hardware support
 pip install -e ".[reachy_mini_wireless]"  # Wireless Reachy Mini
 pip install -e ".[jetson]"                 # Jetson optimization (CUDA)
-
-# Development
-pip install -e ".[dev]"  # Testing & linting tools
-```
 
 ## Available Tools
 

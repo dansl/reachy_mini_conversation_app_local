@@ -13,7 +13,7 @@ def parse_args() -> Tuple[argparse.Namespace, list]:  # type: ignore
     parser.add_argument(
         "--head-tracker",
         choices=["yolo", "mediapipe", None],
-        default=None,
+        default=False,
         help="Choose head tracker (default: None)",
     )
     parser.add_argument("--no-camera", default=False, action="store_true", help="Disable camera usage")
