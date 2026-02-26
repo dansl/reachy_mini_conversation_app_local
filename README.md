@@ -31,16 +31,17 @@
 ### 1. Install the App
 
 ```bash
+#Install Python3 and required libraries
+#Debian/Ubuntu
+sudo apt install python3 libcairo2-dev pkg-config libgirepository1.0-dev
+
 # Clone repository
 git clone <repo-url>
 cd reachy_mini_conversation_app_local
 
 # Setup python VENV
-python -m venv reachy-mini-env
+python3 -m venv reachy-mini-env
 source reachy-mini-env/bin/activate
-
-# Install Requirements
-pip install -r requirements.txt
 
 # Install project
 pip install -e "."
