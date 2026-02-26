@@ -11,11 +11,14 @@ def parse_args() -> Tuple[argparse.Namespace, list]:  # type: ignore
     """Parse command line arguments."""
     parser = argparse.ArgumentParser("Reachy Mini Conversation App")
     parser.add_argument(
-        "--head-tracker-mediapipe",
+        "--head-tracker",
+        choices=["yolo", "mediapipe", None],
         default=False,
-        help="Use mediapipe instead of yolo",
+        help="Choose head tracker (default: yolo)",
     )
     parser.add_argument("--no-camera", default=False, action="store_true", help="Disable all camera usage")
+    parser.add_argument("--no-vision", default=False, action="store_true", help="Disable vision model processing")
+    parser.add_argument("--no-head-tracking", default=False, action="store_true", help="Disable head tracking")
     parser.add_argument("--gradio", default=False, action="store_true", help="Open gradio interface")
     parser.add_argument("--debug", default=False, action="store_true", help="Enable debug logging")
 
@@ -29,33 +32,35 @@ def handle_vision_stuff(args: argparse.Namespace, current_robot: ReachyMini) -> 
     vision_manager = None
 
     if not args.no_camera:
-        if args.head_tracker_mediapipe:
-            from reachy_mini_toolbox.vision import (
-                HeadTracker,
-            )
+        if not args.no_head_tracking:
+            if args.head_tracker and args.head_tracker == "mediapipe":
+                from reachy_mini_toolbox.vision import (
+                    HeadTracker,
+                )
 
-            head_tracker = HeadTracker()
-        else:
-            from reachy_mini_conversation_app.vision.yolo_head_tracker import (
-                HeadTracker,
-            )
+                head_tracker = HeadTracker()
+            else:
+                from reachy_mini_conversation_app.vision.yolo_head_tracker import (
+                    HeadTracker,
+                )
 
-            head_tracker = HeadTracker()
+                head_tracker = HeadTracker()
 
         # Initialize camera worker
         camera_worker = CameraWorker(current_robot, head_tracker)
 
-        # Initialize vision manager only if local vision is requested
-        try:
-            from reachy_mini_conversation_app.vision.processors import (
-                initialize_vision_manager,
-            )
+        if not args.no_vision:
+            # Initialize vision manager only if local vision is requested
+            try:
+                from reachy_mini_conversation_app.vision.processors import (
+                    initialize_vision_manager,
+                )
 
-            vision_manager = initialize_vision_manager(camera_worker)
-        except ImportError as e:
-            raise ImportError(
-                "To use vision, please verify dependencies: pip install -r requirements.txt",
-            ) from e
+                vision_manager = initialize_vision_manager(camera_worker)
+            except ImportError as e:
+                raise ImportError(
+                    "To use vision, please verify dependencies: pip install -r requirements.txt",
+                ) from e
 
     return camera_worker, head_tracker, vision_manager
 

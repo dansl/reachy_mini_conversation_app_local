@@ -109,8 +109,10 @@ See `.env.example` for more, and `.env.jetson` for Jetson Nano optimized setting
 | Option | Description |
 |--------|-------------|
 | `--gradio` | Launch web UI (required for simulator) |
-| `--head-tracker-mediapipe` | Use headpipe instead of yolo |
-| `--no-camera` | Disable camera (audio-only mode) |
+| `--no-camera` | Disable all camera usage (audio-only mode) |
+| `--no-vision` | Disable vision model processing |
+| `--no-head-tracking` | Disable head tracking |
+| `--head-tracker mediapipe` | Use mediapipe instead of yolo |
 | `--debug` | Enable verbose logging |
 
 ## Available Tools
