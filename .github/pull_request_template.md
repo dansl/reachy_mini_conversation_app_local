@@ -20,8 +20,7 @@
 - [ ] Everything is tested in simulation as well (`--gradio` required)
 
 ### Vision / motion
-- [ ] Local vision (`--local-vision`)
-- [ ] YOLO or MediaPipe head tracker (`--head-tracker {yolo,mediapipe}`)
+- [ ] YOLO or MediaPipe head tracker (`--head-tracker-mediapipe`)
 - [ ] Camera pipeline (with/without `--no-camera`)
 - [ ] Movement manager (dances, emotions, head motion)
 - [ ] Head wobble
@@ -29,7 +28,6 @@
 
 ### Dependencies & config
 - [ ] Updated `pyproject.toml` if deps/extras changed
-- [ ] Regenerated `uv.lock` if deps changed
 - [ ] Updated `.env.example` if new config vars added
 
 ## Notes

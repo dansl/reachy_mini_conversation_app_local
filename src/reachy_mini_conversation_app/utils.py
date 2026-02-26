@@ -11,74 +11,51 @@ def parse_args() -> Tuple[argparse.Namespace, list]:  # type: ignore
     """Parse command line arguments."""
     parser = argparse.ArgumentParser("Reachy Mini Conversation App")
     parser.add_argument(
-        "--head-tracker",
-        choices=["yolo", "mediapipe", None],
+        "--head-tracker-mediapipe",
         default=False,
-        help="Choose head tracker (default: None)",
+        help="Use mediapipe instead of yolo",
     )
-    parser.add_argument("--no-camera", default=False, action="store_true", help="Disable camera usage")
-    parser.add_argument(
-        "--local-vision",
-        default=False,
-        action="store_true",
-        help="Use local vision model instead of gpt-realtime vision",
-    )
+    parser.add_argument("--no-camera", default=False, action="store_true", help="Disable all camera usage")
     parser.add_argument("--gradio", default=False, action="store_true", help="Open gradio interface")
     parser.add_argument("--debug", default=False, action="store_true", help="Enable debug logging")
-    parser.add_argument(
-        "--wireless-version",
-        default=False,
-        action="store_true",
-        help="Use WebRTC backend for wireless version of the robot",
-    )
-    parser.add_argument(
-        "--on-device",
-        default=False,
-        action="store_true",
-        help="Use when conversation app is running on the same device as Reachy Mini daemon",
-    )
+
     return parser.parse_known_args()
 
 
 def handle_vision_stuff(args: argparse.Namespace, current_robot: ReachyMini) -> Tuple[CameraWorker | None, Any, Any]:
-    """Initialize camera, head tracker, camera worker, and vision manager.
-
-    By default, vision is handled by gpt-realtime model when camera tool is used.
-    If --local-vision flag is used, a local vision model will process images periodically.
-    """
+    """Initialize camera, head tracker, camera worker, and vision manager."""
     camera_worker = None
     head_tracker = None
     vision_manager = None
 
     if not args.no_camera:
-        # Initialize head tracker if specified
-        if args.head_tracker is not None:
-            if args.head_tracker == "yolo":
-                from reachy_mini_conversation_app.vision.yolo_head_tracker import HeadTracker
+        if args.head_tracker_mediapipe:
+            from reachy_mini_toolbox.vision import (
+                HeadTracker,
+            )
 
-                head_tracker = HeadTracker()
-            elif args.head_tracker == "mediapipe":
-                from reachy_mini_toolbox.vision import HeadTracker  # type: ignore[no-redef]
+            head_tracker = HeadTracker()
+        else:
+            from reachy_mini_conversation_app.vision.yolo_head_tracker import (
+                HeadTracker,
+            )
 
-                head_tracker = HeadTracker()
+            head_tracker = HeadTracker()
 
         # Initialize camera worker
         camera_worker = CameraWorker(current_robot, head_tracker)
 
         # Initialize vision manager only if local vision is requested
-        if args.local_vision:
-            try:
-                from reachy_mini_conversation_app.vision.processors import initialize_vision_manager
-
-                vision_manager = initialize_vision_manager(camera_worker)
-            except ImportError as e:
-                raise ImportError(
-                    "To use --local-vision, please install the extra dependencies: pip install '.[local_vision]'",
-                ) from e
-        else:
-            logging.getLogger(__name__).info(
-                "Using gpt-realtime for vision (default). Use --local-vision for local processing.",
+        try:
+            from reachy_mini_conversation_app.vision.processors import (
+                initialize_vision_manager,
             )
+
+            vision_manager = initialize_vision_manager(camera_worker)
+        except ImportError as e:
+            raise ImportError(
+                "To use vision, please verify dependencies: pip install -r requirements.txt",
+            ) from e
 
     return camera_worker, head_tracker, vision_manager
 

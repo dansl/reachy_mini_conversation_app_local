@@ -47,10 +47,10 @@ source reachy-mini-env/bin/activate
 pip install -r requirements.txt
 
 # Install project
-pip install -e ".[local_vision]"
+pip install -e "."
 
 # OR - For Jetson Nano with CUDA optimization:
-pip install -e ".[jetson,local_vision]"
+pip install -e ".[jetson]"
 ```
 
 ### 2. Install Local LLM
@@ -83,12 +83,12 @@ NOTE: (Wireless Reachy) Make sure you "wake up" reachy via the app or [http://re
 
 **Console mode (headless):**
 ```bash
-reachy-mini-conversation-app --local-vision
+reachy-mini-conversation-app
 ```
 
 **Web UI mode (required for simulator):**
 ```bash
-reachy-mini-conversation-app --gradio --local-vision
+reachy-mini-conversation-app --gradio
 ```
 
 Access gradio site at `http://localhost:7860`
@@ -106,30 +106,16 @@ The app auto-configures for your hardware. Key settings in `.env`:
 | `CUDA_SUPPORT` | `false` | If running on NVIDIA hardware |
 | `LOCAL_VISION_MODEL` | `SmolVLM2-2.2B-Instruct` | Vision recognition model |
 
-See `.env.jetson` for Jetson Nano optimized settings.
+See `.env.example` for more, and `.env.jetson` for Jetson Nano optimized settings.
 
 ## CLI Options
 
 | Option | Description |
 |--------|-------------|
 | `--gradio` | Launch web UI (required for simulator) |
-| `--head-tracker {yolo,mediapipe}` | Enable face tracking |
-| `--local-vision` | Use local vision model (requires `local_vision` extra) |
+| `--head-tracker-mediapipe` | Use headpipe instead of yolo |
 | `--no-camera` | Disable camera (audio-only mode) |
 | `--debug` | Enable verbose logging |
-
-## Optional Extras
-
-```bash
-# Vision features
-pip install -e ".[local_vision]"      # Local vision model (SmolVLM2)
-pip install -e ".[yolo_vision]"       # YOLO face tracking
-pip install -e ".[mediapipe_vision]"  # MediaPipe tracking
-pip install -e ".[all_vision]"        # All vision features
-
-# Hardware support
-pip install -e ".[reachy_mini_wireless]"  # Wireless Reachy Mini
-pip install -e ".[jetson]"                 # Jetson optimization (CUDA)
 
 ## Available Tools
 

@@ -84,9 +84,10 @@ cd reachy_mini_conversation_app_local
 ```bash
 python -m venv reachy-mini-env    
 source reachy-mini-env/bin/activate
+pip install -r requirements.txt
 
 # Install the app with Jetson optimizations
-pip install -e ".[jetson,local_vision]"
+pip install -e ".[jetson]"
 ```
 
 **Note**: The `jetson` extra includes `onnxruntime-gpu` for CUDA acceleration.
