@@ -54,7 +54,7 @@ pip install -e ".[jetson]"
 ### Option 1: Ollama (Recommended)
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
-ollama pull gemma3:1.7b
+ollama pull qwen3:1.7b
 ```
 
 ### Option 2: LM Studio
