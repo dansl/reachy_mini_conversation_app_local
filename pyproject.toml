@@ -17,6 +17,7 @@ dependencies = [
     "huggingface_hub",
     "opencv-python",
     "kokoro-onnx",
+    "emoji",
 
     #AI
     "openai",
