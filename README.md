@@ -15,12 +15,8 @@
 ## Prerequisites
 
 > [!IMPORTANT]
-> **Install Reachy Mini SDK first**: [Install Guide](https://huggingface.co/docs/reachy_mini/SDK/installation) - [ReachyMini Repo](https://github.com/pollen-robotics/reachy_mini/)
->
-> ```
-> pip install "reachy-mini"
-> ```
->
+> **Learn how to use and setup Reachy Mini first!**: [Getting Started](https://huggingface.co/docs/reachy_mini/platforms/reachy_mini/get_started) - [ReachyMini Repo](https://github.com/pollen-robotics/reachy_mini/)
+> 
 > For Wireless Reachy, you will also need Gstreamer installed via [Homebrew](https://brew.sh)
 > ```
 > brew install gstreamer libnice-gstreamer
