@@ -51,16 +51,22 @@ pip install -e ".[jetson]"
 
 ### 2. Install Local LLM
 
-**Ollama (Recommended):**
+### Option 1: Ollama (Recommended)
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
-ollama pull gemma3:1b
+ollama pull gemma3:1.7b
 ```
 
-**Or LM Studio:**
-- Download from [lmstudio.ai](https://lmstudio.ai)
-- Load a GGUF model (e.g., Phi-3-mini)
-- Start local server on port 1234
+### Option 2: LM Studio
+1. Download LM Studio for ARM from [lmstudio.ai](https://lmstudio.ai)
+2. Install and launch LM Studio
+3. Download a GGUF model
+4. Start the local server on port 1234
+5. Update `.env`:
+   ```bash
+   LLM_PROVIDER=lmstudio
+   LMSTUDIO_MODEL=google/gemma-3-1b
+   ```
 
 ### 3. Configure
 

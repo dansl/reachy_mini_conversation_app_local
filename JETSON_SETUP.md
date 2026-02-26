@@ -69,60 +69,12 @@ sudo nvpmodel -q
 
 ---
 
-## Install Dependencies
+## Install App
 
-### 1. Clone the Repository
+### See Quick Start in README
+Go to [Quick Start](/README.md#quick-start) and complete setup using ```[jetson]```
 
-```bash
-cd ~
-git clone <repo-url>
-cd reachy_mini_conversation_app_local
-```
-
-### 2. Install Python Dependencies
-
-```bash
-python -m venv reachy-mini-env    
-source reachy-mini-env/bin/activate
-pip install -r requirements.txt
-
-# Install the app with Jetson optimizations
-pip install -e ".[jetson]"
-```
-
-**Note**: The `jetson` extra includes `onnxruntime-gpu` for CUDA acceleration.
-
-### 3. Install PyTorch for Jetson (if not already installed)
-
-```bash
-# PyTorch for Jetson (optimized build)
-pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-```
-
----
-
-## Configure for Jetson
-
-### 1. Copy Jetson Environment File
-
-```bash
-cp .env.jetson .env
-```
-
-### 2. Review Configuration
-
-Edit `.env` to customize:
-
-```bash
-nano .env
-```
-
-**Key settings**:
-- `OLLAMA_MODEL`: Choose your LLM (default: `phi-3-mini-4k-instruct`)
-- `DISTIL_WHISPER_MODEL`: STT model (default: `distil-whisper/distil-small.en`)
-- `KOKORO_VOICE`: TTS voice (default: `af_sarah`)
-
-### 3. Set Cache Directory (Optional - Use SSD if available)
+### Set Cache Directory (Optional - Use SSD if available)
 
 ```bash
 # If you have an SSD mounted at /mnt/ssd:
@@ -143,36 +95,23 @@ echo "HF_HOME=/mnt/ssd/hf_cache" >> .env
 # Install Ollama
 curl -fsSL https://ollama.com/install.sh | sh
 
-# Pull recommended model for Jetson (3.8B params, ~2GB RAM)
-ollama pull phi-3-mini-4k-instruct
+# Pull recommended model for Jetson
+ollama pull qwen3:1.7b
 
 # Verify Ollama is running
 ollama list
-```
-
-**Alternative models** (choose based on your needs):
-
-```bash
-# Fastest option (1B params, ~1GB RAM)
-ollama pull llama3.2:1b
-
-# Good balance (2B params, ~1.5GB RAM)
-ollama pull gemma2:2b
-
-# More capable (7B params, ~4GB RAM - may be slow)
-ollama pull llama3.2:3b
 ```
 
 ### Option 2: LM Studio
 
 1. Download LM Studio for ARM from [lmstudio.ai](https://lmstudio.ai)
 2. Install and launch LM Studio
-3. Download a GGUF model (e.g., `Phi-3-mini-4k-instruct.Q4_K_M.gguf`)
+3. Download a GGUF model
 4. Start the local server on port 1234
 5. Update `.env`:
    ```bash
    LLM_PROVIDER=lmstudio
-   LMSTUDIO_MODEL=Phi-3-mini-4k-instruct.Q4_K_M.gguf
+   LMSTUDIO_MODEL=google/gemma-3-1b
    ```
 
 ---
@@ -184,10 +123,6 @@ ollama pull llama3.2:3b
 ```bash
 reachy-mini-conversation-app
 ```
-
-This will:
-1. Start a settings UI at `http://localhost:7860` (first-time setup only)
-2. Run the conversation loop using the robot's mic/speaker
 
 ### Gradio Web UI Mode
 
