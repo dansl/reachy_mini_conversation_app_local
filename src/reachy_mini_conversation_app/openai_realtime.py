@@ -4,6 +4,7 @@ import logging
 from typing import Any, Final, Tuple, Literal, Optional
 from datetime import datetime
 
+import emoji
 import numpy as np
 from openai import AsyncOpenAI
 from fastrtc import AdditionalOutputs, AsyncStreamHandler, wait_for_item, audio_to_int16
@@ -438,8 +439,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 # Show in UI
                 await self.output_queue.put(AdditionalOutputs({"role": "assistant", "content": text_response}))
 
-                # Synthesize with local TTS
-                await self._synthesize_locally(text_response)
+                # Synthesize with local TTS\
+                demojized_text_response = emoji.replace_emoji(text_response, replace="")
+                await self._synthesize_locally(demojized_text_response)
 
         except Exception as e:
             logger.error("Local LLM generation failed: %s", e)
