@@ -8,7 +8,7 @@ version = "0.1.0"
 authors = [{ name = "Pollen Robotics", email = "contact@pollen-robotics.com" }]
 description = ""
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 dependencies = [
     #Media
     "aiortc",
@@ -34,12 +34,13 @@ dependencies = [
     #Local Audio (Always included for fully local operation)
     "distil-whisper-fastrtc",
     "torch",
+    "torchaudio",
     "transformers",
     "accelerate",
     "scipy",
 
     #Vision
-    "torch",
+    "torchvision",
     "transformers",
     "num2words",
     "ultralytics",
