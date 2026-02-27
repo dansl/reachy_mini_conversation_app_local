@@ -279,7 +279,7 @@ class LocalTTS:
 
         Args:
             output_sample_rate: Target sample rate for output audio
-            voice: Voice to use (af_sarah, am_michael, bf_emma, etc.)
+            voice: Voice to use (af_heart, am_michael, bf_emma, etc.)
             speed: Speech speed multiplier (0.5-2.0)
 
         """

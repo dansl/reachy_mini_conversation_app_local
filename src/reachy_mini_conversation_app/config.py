@@ -93,7 +93,7 @@ class Config:
     # LOCAL TTS CONFIGURATION (Text-to-Speech - Kokoro via FastRTC)
     # =========================================================================
     # Kokoro settings (lightweight, 82M parameters, via FastRTC)
-    KOKORO_VOICE = os.getenv("KOKORO_VOICE", "af_sarah")  # Voice selection
+    KOKORO_VOICE = os.getenv("KOKORO_VOICE", "af_heart")  # Voice selection
     KOKORO_SPEED = float(os.getenv("KOKORO_SPEED", "1.0"))  # Speech speed (0.5-2.0)
 
     logger.info(f"Local TTS: Kokoro via FastRTC (voice: {KOKORO_VOICE}, speed: {KOKORO_SPEED})")

@@ -64,15 +64,15 @@ ollama pull qwen3:1.7b
 3. Download a GGUF model
 4. Start the local server on port 1234
 5. Update `.env`:
-   ```bash
-   LLM_PROVIDER=lmstudio
-   LMSTUDIO_MODEL=google/gemma-3-1b
-   ```
+```bash
+LLM_PROVIDER=lmstudio
+LMSTUDIO_MODEL=google/gemma-3-1b
+```
 
 ### 3. Configure
 
 ```bash
-# Copy example config
+# Copy example config, use .env.jetson for Jetson tweaks
 cp .env.example .env
 
 # Edit .env
@@ -105,7 +105,7 @@ The app auto-configures for your hardware. Key settings in `.env`:
 | `LLM_PROVIDER` | `ollama` | LLM backend (`ollama` or `lmstudio`) |
 | `OLLAMA_MODEL` | `qwen3:1.7b` | Ollama model name |
 | `DISTIL_WHISPER_MODEL` | `distil-small.en` | Speech recognition model |
-| `KOKORO_VOICE` | `af_sarah` | TTS voice (af_sarah, am_michael, etc.) |
+| `KOKORO_VOICE` | `af_heart` | TTS voice |
 | `CUDA_SUPPORT` | `false` | If running on NVIDIA hardware |
 | `LOCAL_VISION_MODEL` | `SmolVLM2-2.2B-Instruct` | Vision recognition model |
 
@@ -170,7 +170,7 @@ See `profiles/example/` for reference.
 ```
 
 **No audio output:**
-- Check TTS voice is valid: `af_sarah`, `am_michael`, `bf_emma`, `bm_lewis`
+- Check TTS voice is valid: `af_heart`
 - Verify Ollama/LM Studio is running: `curl http://localhost:11434` or `:1234`
 
 **Out of memory (Jetson):**
