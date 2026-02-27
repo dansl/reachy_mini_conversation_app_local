@@ -1,3 +1,4 @@
+import json
 import base64
 import asyncio
 import logging
@@ -380,22 +381,49 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
             logger.debug("Calling local LLM with %d messages", len(messages))
 
-            # Call local LLM (no tool support - using base instruct model)
+            tool_specs = get_tool_specs()
+            logger.debug("Tool specifications being sent: %s", tool_specs)
+            logger.debug("Number of tools: %d", len(tool_specs))
+
+            for i, tool in enumerate(tool_specs):
+                logger.debug("Tool %d: %s", i, tool.get("name", "unknown"))
+
+            # Call local LLM with tool support
             response = await self._local_llm_client.chat.completions.create(
                 model=self._local_llm_model,
                 messages=messages,
                 max_tokens=512,
                 temperature=0.7,
-                tools=get_tool_specs(),
+                stream=False,
+                tools=tool_specs,
             )
 
             choice = response.choices[0]
             assistant_message = choice.message
 
-            logger.info("Received tool calls from LLM: %s", assistant_message.tool_calls)
             if assistant_message.tool_calls:
                 logger.info("Received tool calls from LLM: %s", assistant_message.tool_calls)
-                tool_results = []
+
+                # 1. Append the assistant's tool-call message to the conversation
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": assistant_message.content,
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments,
+                                },
+                            }
+                            for tc in assistant_message.tool_calls
+                        ],
+                    }
+                )
+
+                # 2. Execute each tool and append its result message
                 for tool_call in assistant_message.tool_calls:
                     tool_name = tool_call.function.name
                     args_str = tool_call.function.arguments
@@ -408,15 +436,23 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         logger.error("Tool '%s' failed: %s", tool_name, e)
                         tool_result = {"error": str(e)}
 
-                    tool_results.append(tool_result)
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": json.dumps(tool_result),
+                        }
+                    )
 
-                # Now send the tool results back to the LLM for a final response
-                # You may need to add these results as a new message to conversation history
-                # But the current approach might not work with Ollama natively unless it supports
-                # multi-turn tool calling properly.
-
-                # For now, just log the results and proceed
-                logger.info("Tool results: %s", tool_results)
+                # 3. Follow-up LLM call to get the verbal response after tool execution
+                logger.debug("Calling local LLM for follow-up after tool execution")
+                response = await self._local_llm_client.chat.completions.create(
+                    model=self._local_llm_model,
+                    messages=messages,
+                    max_tokens=512,
+                    temperature=0.7,
+                )
+                assistant_message = response.choices[0].message
 
             # Get the text content
             text_response = assistant_message.content

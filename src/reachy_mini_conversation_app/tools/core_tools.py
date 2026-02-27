@@ -32,7 +32,6 @@ ALL_TOOL_SPECS: List[Dict[str, Any]] = []
 _TOOLS_INITIALIZED = False
 
 
-
 def get_concrete_subclasses(base: type[Tool]) -> List[type[Tool]]:
     """Recursively find all concrete (non-abstract) subclasses of a base class."""
     result: List[type[Tool]] = []
@@ -75,9 +74,7 @@ class Tool(abc.ABC):
         """Return the function spec for LLM consumption."""
         return {
             "type": "function",
-            "name": self.name,
-            "description": self.description,
-            "parameters": self.parameters_schema,
+            "function": {"name": self.name, "description": self.description, "parameters": self.parameters_schema},
         }
 
     @abc.abstractmethod
