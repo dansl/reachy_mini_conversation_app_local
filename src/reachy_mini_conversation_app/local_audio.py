@@ -6,6 +6,7 @@ This module provides built-in local alternatives to cloud services:
 - TTS: Kokoro-82M for text-to-speech (lightweight, edge-optimized)
 """
 
+import os
 import re
 import asyncio
 import logging
@@ -270,8 +271,9 @@ class LocalTTS:
     def __init__(
         self,
         output_sample_rate: int = 24000,
-        voice: str = "af_sarah",
-        speed: float = 1.0,
+        voice: str = os.getenv("KOKORO_VOICE", "af_heart"),
+        speed: float = float(os.getenv("KOKORO_SPEED", "1.0")),
+        lang: str = os.getenv("KOKORO_LANGUAGE", "en-us"),
     ):
         """Initialize the TTS.
 
@@ -284,6 +286,8 @@ class LocalTTS:
         self.output_sample_rate = output_sample_rate
         self.voice = voice
         self.speed = speed
+        self.lang = lang
+        self.options = None
         self._model = None
         self._initialized = False
 
@@ -295,12 +299,13 @@ class LocalTTS:
         self._initialized = True
 
         try:
-            from fastrtc import get_tts_model
+            from fastrtc import KokoroTTSOptions, get_tts_model
 
+            self.options = KokoroTTSOptions(voice=self.voice, speed=self.speed, lang=self.lang)
             logger.info("Loading Kokoro TTS model (voice: %s)...", self.voice)
 
             # Use FastRTC's built-in Kokoro support
-            self._model = get_tts_model(model="kokoro", voice=self.voice)
+            self._model = get_tts_model(model="kokoro")
 
             logger.info("Kokoro TTS model loaded successfully")
             return True
@@ -351,7 +356,7 @@ class LocalTTS:
 
             # Collect all audio chunks from the streaming TTS
             audio_chunks = []
-            for audio_chunk in self._model.stream_tts_sync(text):
+            for audio_chunk in self._model.stream_tts_sync(text, self.options):
                 audio_chunks.append(audio_chunk)
 
             if not audio_chunks:

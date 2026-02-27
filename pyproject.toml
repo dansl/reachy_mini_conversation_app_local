@@ -50,6 +50,7 @@ dependencies = [
 
     #Wireless Reachy
     "PyGObject",
+    "pycairo",
     "gst-signalling",
 
 ]
